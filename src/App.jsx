@@ -1087,6 +1087,7 @@ export default function App() {
     const [newChartData, setNewChartData] = useState({ title: '', type: 'bar', groupBy: 'CARGO' });
     const [isGSheetsModalOpen, setIsGSheetsModalOpen] = useState(false);
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+    const [deleteModalRecord, setDeleteModalRecord] = useState(null);
 
     const [isCinematic, setIsCinematic] = useState(false);
 
@@ -1561,10 +1562,14 @@ export default function App() {
         setEditFormData({});
     };
 
-    const handleDeleteRecordById = (recordId) => {
+    const requestDeleteRecord = (record) => {
+        if (!record?._id) return;
+        setDeleteModalRecord(record);
+    };
+
+    const handleDeleteModalConfirm = () => {
+        const recordId = deleteModalRecord?._id;
         if (!recordId) return;
-        const confirmed = window.confirm('Deseja excluir este registro?');
-        if (!confirmed) return;
 
         setAppData((prev) => validateData((Array.isArray(prev) ? prev : []).filter((item) => item._id !== recordId)));
         if (selectedRecord?._id === recordId) {
@@ -1573,6 +1578,11 @@ export default function App() {
             setIsEditing(false);
             setEditFormData({});
         }
+        setDeleteModalRecord(null);
+    };
+
+    const handleDeleteModalCancel = () => {
+        setDeleteModalRecord(null);
     };
 
     const addCustomChart = () => {
@@ -1970,7 +1980,7 @@ export default function App() {
                                                                 <button id={index === 0 ? 'tour-record-open-btn' : undefined} onClick={() => { setSelectedRecord(row); setIsEditing(false); setDeleteConfirmOpen(false); }} className="p-2.5 bg-white hover:bg-indigo-50 rounded-lg shadow-sm border border-slate-200 transition-all hover:border-indigo-300 hover:shadow-md active:scale-95" type="button" title="Abrir ficha">
                                                                     <Edit2 className="w-4 h-4 text-slate-600 hover:text-indigo-700" />
                                                                 </button>
-                                                                <button onClick={() => handleDeleteRecordById(row._id)} className="p-2.5 bg-white hover:bg-red-50 rounded-lg shadow-sm border border-slate-200 transition-all hover:border-red-300 hover:shadow-md active:scale-95" type="button" title="Excluir registro">
+                                                                <button onClick={() => requestDeleteRecord(row)} className="p-2.5 bg-white hover:bg-red-50 rounded-lg shadow-sm border border-slate-200 transition-all hover:border-red-300 hover:shadow-md active:scale-95" type="button" title="Excluir registro">
                                                                     <Trash2 className="w-4 h-4 text-slate-600 hover:text-red-700" />
                                                                 </button>
                                                             </div>
@@ -2140,6 +2150,43 @@ export default function App() {
                     onStartTableTutorial={handlePatchNotesStartTableTutorial}
                     onStartSheetsTutorial={handlePatchNotesStartSheetsTutorial}
                 />
+            )}
+
+            {deleteModalRecord && (
+                <div className="fixed inset-0 z-[210] bg-slate-900/65 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
+                    <div className="w-full max-w-md bg-white rounded-3xl border border-slate-200 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
+                        <div className="px-6 py-5 border-b bg-gradient-to-r from-red-50 to-rose-50 flex items-start gap-3">
+                            <div className="p-2.5 rounded-2xl bg-red-100">
+                                <Trash2 className="w-5 h-5 text-red-600" />
+                            </div>
+                            <div className="min-w-0">
+                                <h3 className="text-lg font-black text-slate-800">Confirmar exclusao</h3>
+                                <p className="text-sm text-slate-600 mt-0.5">Essa acao remove o registro da tabela e da planilha.</p>
+                            </div>
+                        </div>
+
+                        <div className="px-6 py-5 space-y-3 bg-white">
+                            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-2">
+                                <p className="text-[11px] uppercase tracking-wider font-bold text-slate-500">Registro selecionado</p>
+                                <p className="text-sm font-bold text-slate-800 break-words">{String(getRowValue(deleteModalRecord, ['Nome Subs']) || 'Nome nao informado')}</p>
+                                <div className="flex items-center gap-2">
+                                    <StatusBadge status={String(getRowValue(deleteModalRecord, ['Status']) || '')} />
+                                    <span className="text-xs text-slate-500">{String(getRowValue(deleteModalRecord, ['CARGO']) || 'Sem cargo')}</span>
+                                </div>
+                            </div>
+
+                            <p className="text-sm text-slate-600">Deseja mesmo excluir este registro?</p>
+                        </div>
+
+                        <div className="px-6 py-4 border-t bg-slate-50 flex items-center justify-end gap-3">
+                            <button onClick={handleDeleteModalCancel} className="px-5 py-2.5 rounded-xl text-slate-600 font-bold hover:bg-slate-200 transition-colors" type="button">Cancelar</button>
+                            <button onClick={handleDeleteModalConfirm} className="px-5 py-2.5 rounded-xl bg-red-600 text-white font-bold hover:bg-red-700 shadow-md active:scale-95 transition-all inline-flex items-center gap-2" type="button">
+                                <Trash2 className="w-4 h-4" />
+                                Excluir agora
+                            </button>
+                        </div>
+                    </div>
+                </div>
             )}
 
             {showTutorial && !showWelcome && tutorialSteps.length > 0 && (
