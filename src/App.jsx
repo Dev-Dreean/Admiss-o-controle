@@ -32,6 +32,7 @@ const AUTH_DB_SECRET = 'controle-admissoes-auth-db-v1';
 const GRID_PAGE_SIZE = 200;
 const SHEETS_PAGE_SIZE = 120;
 const SHEET_FILTER_OPTIONS_LIMIT = 300;
+const REQUIRED_FIELDS = ['Nome Subs', 'Status'];
 
 const encodeBase64 = (arrayBuffer) => {
     const bytes = new Uint8Array(arrayBuffer);
@@ -55,6 +56,7 @@ const createEncryptedExcelAuthDb = (account) => {
         Senha: String(account.password || ''),
         CriadoEm: String(account.createdAt || ''),
         AtualizadoEm: String(account.updatedAt || ''),
+        TutorialProgress: JSON.stringify(normalizeTutorialProgress(account.tutorialProgress || DEFAULT_TUTORIAL_PROGRESS)),
     };
 
     const workbook = XLSX.utils.book_new();
@@ -86,6 +88,13 @@ const readEncryptedExcelAuthDb = (encryptedValue) => {
             password: String(latestRow.Senha || ''),
             createdAt: String(latestRow.CriadoEm || ''),
             updatedAt: String(latestRow.AtualizadoEm || ''),
+            tutorialProgress: normalizeTutorialProgress((() => {
+                try {
+                    return latestRow.TutorialProgress ? JSON.parse(String(latestRow.TutorialProgress)) : DEFAULT_TUTORIAL_PROGRESS;
+                } catch (error) {
+                    return DEFAULT_TUTORIAL_PROGRESS;
+                }
+            })()),
         };
 
         return hasStoredAccount(account) ? account : null;
@@ -909,8 +918,7 @@ export default function App() {
     const [authNotice, setAuthNotice] = useState('');
 
     const [showWelcome, setShowWelcome] = useState(false);
-    const [savedTutorialProgressRaw, setSavedTutorialProgress] = useLocalStorage('vagas_tutorial_sections', DEFAULT_TUTORIAL_PROGRESS);
-    const savedTutorialProgress = useMemo(() => normalizeTutorialProgress(savedTutorialProgressRaw), [savedTutorialProgressRaw]);
+    const accountTutorialProgress = useMemo(() => normalizeTutorialProgress(savedAccount?.tutorialProgress || DEFAULT_TUTORIAL_PROGRESS), [savedAccount]);
     const [sessionTutorialProgress, setSessionTutorialProgress] = useState(DEFAULT_TUTORIAL_PROGRESS);
     const [showTutorial, setShowTutorial] = useState(false);
     const [tutorialSection, setTutorialSection] = useState('TABELA');
@@ -931,7 +939,6 @@ export default function App() {
     const [sheetPage, setSheetPage] = useState(1);
     const [isQuickAddModalOpen, setIsQuickAddModalOpen] = useState(false);
     const [quickAddData, setQuickAddData] = useState({});
-    const [quickAddShowAllFields, setQuickAddShowAllFields] = useState(false);
 
     const [selectedRecord, setSelectedRecord] = useState(null);
     const [isEditing, setIsEditing] = useState(false);
@@ -943,6 +950,8 @@ export default function App() {
     const [isCinematic, setIsCinematic] = useState(false);
 
     const mainScrollRef = useRef(null);
+    const tableSearchInputRef = useRef(null);
+    const sheetSearchInputRef = useRef(null);
     const persistAccount = (account) => {
         if (!hasStoredAccount(account)) {
             setEncryptedAccountDb('');
@@ -950,7 +959,12 @@ export default function App() {
             return;
         }
 
-        const encryptedDb = createEncryptedExcelAuthDb(account);
+        const normalizedAccount = {
+            ...account,
+            tutorialProgress: normalizeTutorialProgress(account?.tutorialProgress || DEFAULT_TUTORIAL_PROGRESS),
+        };
+
+        const encryptedDb = createEncryptedExcelAuthDb(normalizedAccount);
         if (encryptedDb) {
             setEncryptedAccountDb(encryptedDb);
             setLegacySavedAccount(null);
@@ -958,7 +972,7 @@ export default function App() {
         }
 
         // Fallback para nao perder login caso exista algum erro inesperado na serializacao.
-        setLegacySavedAccount(account);
+        setLegacySavedAccount(normalizedAccount);
     };
 
     const scrollMainToTop = (behavior = 'smooth') => {
@@ -979,7 +993,7 @@ export default function App() {
         return [];
     }, [chartsOwnerKey, customChartsStore]);
     const tutorialSteps = TUTORIAL_STEPS[tutorialSection] || [];
-    const hasCompletedTutorialSection = (section) => savedTutorialProgress[section] || sessionTutorialProgress[section];
+    const hasCompletedTutorialSection = (section) => accountTutorialProgress[section] || sessionTutorialProgress[section];
     const resetAuthenticatedUi = () => {
         setIsAuthenticated(false);
         setCurrentUsername('');
@@ -1059,7 +1073,7 @@ export default function App() {
         }, 250);
 
         return () => clearTimeout(timer);
-    }, [activeTab, data.length, isAuthenticated, savedTutorialProgress, sessionTutorialProgress, showTutorial, showWelcome]);
+    }, [activeTab, data.length, isAuthenticated, accountTutorialProgress, sessionTutorialProgress, showTutorial, showWelcome]);
 
     useEffect(() => {
         if (showWelcome || !isAuthenticated || data.length === 0 || showTutorial || hasCompletedTutorialSection('NEW_FEATURES')) {
@@ -1072,7 +1086,7 @@ export default function App() {
         }, 350);
 
         return () => clearTimeout(timer);
-    }, [data.length, isAuthenticated, savedTutorialProgress, sessionTutorialProgress, showTutorial, showWelcome]);
+    }, [data.length, isAuthenticated, accountTutorialProgress, sessionTutorialProgress, showTutorial, showWelcome]);
 
     useEffect(() => {
         if (!pendingTutorialSection || activeTab !== pendingTutorialSection || showTutorial || showWelcome) {
@@ -1089,11 +1103,15 @@ export default function App() {
     }, [activeTab, pendingTutorialSection, showTutorial, showWelcome]);
 
     const handleTutorialComplete = (section, dontShow) => {
-        if (dontShow) {
-            setSavedTutorialProgress((previous) => ({
-                ...normalizeTutorialProgress(previous),
-                [section]: true,
-            }));
+        if (dontShow && savedAccount) {
+            persistAccount({
+                ...savedAccount,
+                tutorialProgress: {
+                    ...normalizeTutorialProgress(savedAccount.tutorialProgress || DEFAULT_TUTORIAL_PROGRESS),
+                    [section]: true,
+                },
+                updatedAt: new Date().toISOString(),
+            });
         }
 
         setSessionTutorialProgress((previous) => ({
@@ -1108,6 +1126,7 @@ export default function App() {
         setIsEditing(false);
         setEditFormData({});
         setIsChartModalOpen(false);
+        setIsQuickAddModalOpen(false);
         if (typeof window !== 'undefined') window.requestAnimationFrame(() => scrollMainToTop());
     };
 
@@ -1295,18 +1314,21 @@ export default function App() {
         });
         if (Object.prototype.hasOwnProperty.call(base, 'Status')) base.Status = 'ABERTA';
         setQuickAddData(base);
-        setQuickAddShowAllFields(false);
         setIsQuickAddModalOpen(true);
     };
 
     const handleQuickAddSave = () => {
-        const nomeKey = getRowKey(quickAddData, ['Nome Subs']);
-        const statusKey = getRowKey(quickAddData, ['Status']);
-        const nomeValue = String(quickAddData[nomeKey] || '').trim();
-        if (!nomeValue) {
-            alert('Preencha pelo menos o campo Nome Subs para salvar.');
+        const requiredMissing = REQUIRED_FIELDS.filter((field) => {
+            const key = getRowKey(quickAddData, [field]);
+            return !String(quickAddData[key] || '').trim();
+        });
+
+        if (requiredMissing.length > 0) {
+            alert(`Preencha os campos obrigatorios: ${requiredMissing.join(', ')}`);
             return;
         }
+
+        const statusKey = getRowKey(quickAddData, ['Status']);
 
         const record = {
             ...quickAddData,
@@ -1474,16 +1496,6 @@ export default function App() {
         return SHEETS_PRIORITY_COLUMNS;
     }, [selectedRecord, sheetsColumns]);
 
-    const quickAddPrimaryColumns = useMemo(() => {
-        const preferred = ['Status', 'Nome Subs', 'CARGO', 'Candidato', 'Contato Candidato', 'NRE / MUNICIPIO', 'Motivo', getPrazoKey(data[0] || {}), 'OBS:'];
-        return preferred.filter((column, index) => preferred.indexOf(column) === index && detailedColumns.includes(column));
-    }, [data, detailedColumns]);
-
-    const quickAddExtraColumns = useMemo(
-        () => detailedColumns.filter((column) => !quickAddPrimaryColumns.includes(column)),
-        [detailedColumns, quickAddPrimaryColumns],
-    );
-
     const sheetColumnOptions = useMemo(() => {
         const optionsByColumn = {};
 
@@ -1601,6 +1613,45 @@ export default function App() {
         setIsChartModalOpen(TUTORIAL_CHART_MODAL_STEP_IDS.has(currentStepId));
     }, [showTutorial, tutorialActiveStep, tutorialSection]);
 
+    useEffect(() => {
+        if (!showTutorial || tutorialSection !== 'NEW_FEATURES') return;
+
+        const currentStepId = tutorialActiveStep?.id;
+        setIsQuickAddModalOpen(currentStepId === 'new-features-quick-add-modal');
+
+        if (currentStepId === 'new-features-dynamic-filters') {
+            if (activeTab !== 'SHEETS') setActiveTab('SHEETS');
+            setSheetShowFiltersPanel(true);
+        }
+    }, [showTutorial, tutorialActiveStep, tutorialSection]);
+
+    useEffect(() => {
+        const onKeyDown = (event) => {
+            if (!isAuthenticated) return;
+            if (event.ctrlKey || event.metaKey || event.altKey) return;
+
+            const targetTag = String(event.target?.tagName || '').toLowerCase();
+            const isTypingContext = ['input', 'textarea', 'select'].includes(targetTag) || event.target?.isContentEditable;
+
+            if (event.key.toLowerCase() === 'c' && !isTypingContext && !showTutorial) {
+                event.preventDefault();
+                openQuickAddModal();
+            }
+
+            if (event.key.toLowerCase() === 'f' && !isTypingContext) {
+                event.preventDefault();
+                const inputToFocus = activeTab === 'SHEETS' ? sheetSearchInputRef.current : tableSearchInputRef.current;
+                if (inputToFocus) {
+                    inputToFocus.focus();
+                    inputToFocus.select?.();
+                }
+            }
+        };
+
+        window.addEventListener('keydown', onKeyDown);
+        return () => window.removeEventListener('keydown', onKeyDown);
+    }, [activeTab, isAuthenticated, showTutorial]);
+
     const tableAnimationKey = `${activeTab}-${searchTerm}-${filters.status}-${filters.municipio}-${filters.urgencia}-${showErrorsOnly}`;
 
     return (
@@ -1683,16 +1734,8 @@ export default function App() {
                                         <div id="tour-record-count" className="text-xs font-bold text-indigo-600 bg-white px-2 py-1 rounded-md shadow-sm transition-all">Exibindo {filteredData.length} registros</div>
                                     </div>
 
-                                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                                        <div className="inline-flex items-center gap-2">
-                                            <button id="tour-quick-add-btn" onClick={openQuickAddModal} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700 transition-all" type="button"><PlusCircle className="w-4 h-4" /> Novo Cadastro</button>
-                                            <button onClick={() => { setTutorialSection('NEW_FEATURES'); setShowTutorial(true); }} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white border border-slate-300 text-slate-700 text-xs font-semibold hover:bg-slate-100 transition-all" type="button"><Sliders className="w-4 h-4" /> Ver Micro Tutorial</button>
-                                        </div>
-                                        <div className="text-xs text-slate-600 font-semibold">Pagina {gridPage} de {gridTotalPages}</div>
-                                    </div>
-
                                     <div id="tour-filters-controls" className="grid grid-cols-1 md:grid-cols-5 gap-3">
-                                        <div id="tour-search" className="relative group"><Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 group-focus-within:text-indigo-500 transition-colors" /><input type="text" placeholder="Buscar..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="pl-9 pr-4 py-2.5 border border-slate-300 rounded-lg text-sm w-full focus:ring-2 focus:ring-indigo-500 transition-all" /></div>
+                                        <div id="tour-search" className="relative group"><Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 group-focus-within:text-indigo-500 transition-colors" /><input ref={tableSearchInputRef} type="text" placeholder="Buscar..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="pl-9 pr-4 py-2.5 border border-slate-300 rounded-lg text-sm w-full focus:ring-2 focus:ring-indigo-500 transition-all" /></div>
                                         <select id="tour-status-filter" value={filters.status} onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))} className="px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 bg-white font-medium transition-all"><option value="TODOS">Todos os Status</option>{listOptions.status.map((s) => <option key={s} value={s}>{s}</option>)}</select>
                                         <select id="tour-municipio-filter" value={filters.municipio} onChange={(e) => setFilters((f) => ({ ...f, municipio: e.target.value }))} className="px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 bg-white transition-all"><option value="TODOS">Municipios</option>{listOptions.municipios.map((m) => <option key={m} value={m}>{m}</option>)}</select>
                                         <select id="tour-urgencia-filter" value={filters.urgencia} onChange={(e) => setFilters((f) => ({ ...f, urgencia: e.target.value }))} className="px-3 py-2.5 border border-indigo-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 bg-indigo-50 font-bold text-indigo-900 transition-all"><option value="TODOS">Filtro de Prazo</option><option value="URGENTE">Urgente (&lt;= 5d)</option><option value="MEDIA">Em breve (6 a 30d)</option><option value="LONGE">Longo Prazo</option></select>
@@ -1701,6 +1744,11 @@ export default function App() {
                                         ) : (
                                             <button id="tour-errors-filter" onClick={() => setShowErrorsOnly(true)} disabled={!metrics?.invalidCount} className={`font-bold text-xs rounded-lg transition-all flex items-center justify-center gap-2 active:scale-95 disabled:cursor-not-allowed disabled:hover:bg-slate-100 ${metrics?.invalidCount > 0 ? 'bg-red-100 text-red-700 hover:bg-red-200 animate-pulse' : 'bg-slate-100 text-slate-400 border border-slate-200'}`} type="button"><AlertCircle className="w-4 h-4" /> {metrics?.invalidCount > 0 ? 'Corrigir Erros' : 'Sem erros agora'}</button>
                                         )}
+                                    </div>
+
+                                    <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                                        <button id="tour-quick-add-btn" onClick={openQuickAddModal} className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 shadow-sm hover:shadow-md transition-all" type="button"><PlusCircle className="w-5 h-5" /> Novo Cadastro (C)</button>
+                                        <div className="text-sm text-slate-700 font-semibold bg-white px-3 py-2 rounded-lg border border-slate-200">Pagina {gridPage} de {gridTotalPages} • Atalho busca: F</div>
                                     </div>
                                 </div>
 
@@ -1772,10 +1820,7 @@ export default function App() {
                             <div id="tour-sheets-table" className="bg-white shadow-xl border border-green-300 rounded-lg flex flex-col flex-1 min-h-[600px] overflow-hidden animate-in fade-in zoom-in-[0.98] duration-500">
                                 <div className="bg-green-600 text-white p-3 flex justify-between items-center shadow-sm z-10 shrink-0">
                                     <div className="flex items-center gap-2"><TableProperties className="w-5 h-5 text-green-100" /><h2 className="font-bold">Planilha editável</h2></div>
-                                    <div className="flex items-center gap-2">
-                                        <button onClick={openQuickAddModal} className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/20 hover:bg-white/30 text-white text-xs font-bold" type="button"><PlusCircle className="w-4 h-4" /> Novo Cadastro</button>
-                                        <div className="text-sm font-semibold">Exibindo {sheetFilteredData.length} de {filteredData.length} registros</div>
-                                    </div>
+                                    <div className="text-sm font-semibold">Exibindo {sheetFilteredData.length} de {filteredData.length} registros</div>
                                 </div>
 
                                 {/* Barra de Filtros da Planilha */}
@@ -1783,6 +1828,7 @@ export default function App() {
                                     <div className="flex gap-2 items-center mb-3">
                                         <Search className="w-4 h-4 text-slate-400" />
                                         <input
+                                            ref={sheetSearchInputRef}
                                             type="text"
                                             placeholder="Buscar em todas as colunas..."
                                             value={sheetSearchTerm}
@@ -1851,6 +1897,10 @@ export default function App() {
                                             })}
                                         </div>
                                     )}
+
+                                    <div className="mt-3 flex items-center justify-end">
+                                        <button onClick={openQuickAddModal} className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 shadow-sm hover:shadow-md transition-all" type="button"><PlusCircle className="w-5 h-5" /> Novo Cadastro (C)</button>
+                                    </div>
                                 </div>
 
                                 <div className="overflow-auto flex-1 bg-slate-100 p-2">
@@ -1977,50 +2027,29 @@ export default function App() {
                             <button onClick={() => setIsQuickAddModalOpen(false)} className="p-2 text-slate-400 hover:bg-slate-100 rounded-xl transition-colors" type="button"><X className="w-5 h-5" /></button>
                         </div>
 
-                        <div className="p-8 overflow-y-auto flex-1 bg-slate-50">
-                            <div className="mb-4 flex items-center justify-between gap-3">
-                                <p className="text-sm text-slate-600">Preencha rápido os campos principais. Se precisar, expanda para todos os campos.</p>
-                                <button onClick={() => setQuickAddShowAllFields((prev) => !prev)} className="px-3 py-2 rounded-lg border border-slate-300 bg-white text-xs font-semibold hover:bg-slate-100" type="button">
-                                    {quickAddShowAllFields ? 'Mostrar apenas principais' : 'Mostrar todos os campos'}
-                                </button>
-                            </div>
+                        <div className="p-6 md:p-8 overflow-y-auto flex-1 bg-slate-50">
+                            <p className="text-sm text-slate-600 mb-4">Cadastro completo em tela única. Campos com <span className="text-red-600 font-bold">*</span> são obrigatórios.</p>
 
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                                {quickAddPrimaryColumns.map((column) => {
+                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                                {detailedColumns.map((column) => {
                                     const isStatus = normalizeCredentialText(column) === 'status';
                                     const value = quickAddData[column] === undefined || quickAddData[column] === null ? '' : String(quickAddData[column]);
+                                    const isRequired = REQUIRED_FIELDS.some((field) => normalizeCredentialText(field) === normalizeCredentialText(column));
 
                                     return (
-                                        <div key={`new-primary-${column}`} className="space-y-1.5">
-                                            <label className="text-xs font-bold text-slate-500 uppercase">{column}</label>
+                                        <div key={`new-all-${column}`} className="space-y-1.5">
+                                            <label className="text-xs font-bold text-slate-500 uppercase">{column} {isRequired ? <span className="text-red-600">*</span> : null}</label>
                                             {isStatus ? (
-                                                <select value={value || 'ABERTA'} onChange={(e) => setQuickAddData((prev) => ({ ...prev, [column]: e.target.value }))} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-emerald-500 bg-white">
+                                                <select value={value || 'ABERTA'} onChange={(e) => setQuickAddData((prev) => ({ ...prev, [column]: e.target.value }))} className={`w-full px-3 py-2.5 border rounded-xl focus:ring-2 focus:ring-emerald-500 bg-white ${isRequired && !value ? 'border-red-300' : 'border-slate-300'}`}>
                                                     <option value="ABERTA">ABERTA</option><option value="FECHADA">FECHADA</option><option value="ENCAMINHADA">ENCAMINHADA</option><option value="CANCELADA">CANCELADA</option><option value="PAUSADA">PAUSADA</option>
                                                 </select>
                                             ) : (
-                                                <input type="text" value={value} onChange={(e) => setQuickAddData((prev) => ({ ...prev, [column]: e.target.value }))} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-emerald-500 bg-white" />
+                                                <input type="text" value={value} onChange={(e) => setQuickAddData((prev) => ({ ...prev, [column]: e.target.value }))} className={`w-full px-3 py-2.5 border rounded-xl focus:ring-2 focus:ring-emerald-500 bg-white ${isRequired && !value.trim() ? 'border-red-300' : 'border-slate-300'}`} />
                                             )}
                                         </div>
                                     );
                                 })}
                             </div>
-
-                            {quickAddShowAllFields && quickAddExtraColumns.length > 0 && (
-                                <div className="mt-6 pt-5 border-t border-slate-200">
-                                    <h4 className="text-sm font-bold text-slate-700 mb-3">Campos adicionais</h4>
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                                        {quickAddExtraColumns.map((column) => {
-                                            const value = quickAddData[column] === undefined || quickAddData[column] === null ? '' : String(quickAddData[column]);
-                                            return (
-                                                <div key={`new-extra-${column}`} className="space-y-1.5">
-                                                    <label className="text-xs font-bold text-slate-500 uppercase">{column}</label>
-                                                    <input type="text" value={value} onChange={(e) => setQuickAddData((prev) => ({ ...prev, [column]: e.target.value }))} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-emerald-500 bg-white" />
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
-                                </div>
-                            )}
                         </div>
 
                         <div className="px-8 py-4 border-t bg-white flex justify-end gap-3">
