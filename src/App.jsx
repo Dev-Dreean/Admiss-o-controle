@@ -40,7 +40,7 @@ const STATUS_ACCENT = {
 const GOOGLE_SHEETS_URL = 'https://docs.google.com/spreadsheets/d/1hmLkIX2B4rh6NDtJUXOhtjdXhddozqPs9uMTzaTeBsk/edit?usp=sharing';
 const GOOGLE_SHEETS_CSV_EXPORT = 'https://docs.google.com/spreadsheets/d/1hmLkIX2B4rh6NDtJUXOhtjdXhddozqPs9uMTzaTeBsk/export?format=csv';
 const AUTH_ACCESS_KEY = 'Plansul@2025';
-const AUTH_SESSION_DURATION_MS = 60 * 60 * 1000;
+const AUTH_SESSION_DURATION_MS = 24 * 60 * 60 * 1000;
 const AUTH_DB_STORAGE_KEY = 'vagas_internal_account_excel_encrypted';
 const AUTH_LEGACY_STORAGE_KEY = 'vagas_internal_account';
 const AUTH_DB_SHEET_NAME = 'USUARIOS';
@@ -1077,6 +1077,11 @@ export default function App() {
     const [sheetFilterColumn, setSheetFilterColumn] = useState('TODOS');
     const [sheetFilterTerm, setSheetFilterTerm] = useState('');
     const [sheetPage, setSheetPage] = useState(1);
+    const [sheetUiPrefsRaw, setSheetUiPrefs] = useLocalStorage('vagas_sheets_ui_prefs', { hiddenColumns: [], widthOverrides: {} });
+    const sheetUiPrefs = sheetUiPrefsRaw && typeof sheetUiPrefsRaw === 'object'
+        ? sheetUiPrefsRaw
+        : { hiddenColumns: [], widthOverrides: {} };
+    const [isSheetColumnsPanelOpen, setIsSheetColumnsPanelOpen] = useState(false);
     const [isQuickAddModalOpen, setIsQuickAddModalOpen] = useState(false);
     const [quickAddData, setQuickAddData] = useState({});
 
@@ -1094,6 +1099,8 @@ export default function App() {
     const mainScrollRef = useRef(null);
     const tableSearchInputRef = useRef(null);
     const sheetSearchInputRef = useRef(null);
+    const sheetColumnsPanelRef = useRef(null);
+    const sheetResizeStateRef = useRef(null);
     const persistAccount = (account) => {
         if (!hasStoredAccount(account)) {
             setEncryptedAccountDb('');
@@ -1187,7 +1194,7 @@ export default function App() {
         const expiryTimestamp = getAuthSessionExpiryTimestamp(authSession);
         if (!expiryTimestamp || expiryTimestamp <= Date.now()) {
             setAuthSession(null);
-            setAuthNotice('Sua sessao expirou apos 1 hora. Faca login novamente.');
+            setAuthNotice('Sua sessao expirou apos 24 horas. Faca login novamente.');
             resetAuthenticatedUi();
             return undefined;
         }
@@ -1197,7 +1204,7 @@ export default function App() {
 
         const timer = window.setTimeout(() => {
             setAuthSession(null);
-            setAuthNotice('Sua sessao expirou apos 1 hora. Faca login novamente.');
+            setAuthNotice('Sua sessao expirou apos 24 horas. Faca login novamente.');
             resetAuthenticatedUi();
         }, expiryTimestamp - Date.now());
 
@@ -1757,14 +1764,22 @@ export default function App() {
         return result;
     }, [filteredData, sheetFilterColumn, sheetFilterTerm, sheetSearchTerm]);
 
-    const sheetColumnWidthPercent = useMemo(() => {
-        if (sheetsColumns.length === 0) return {};
+    const hiddenSheetColumns = useMemo(() => (
+        Array.isArray(sheetUiPrefs.hiddenColumns) ? sheetUiPrefs.hiddenColumns : []
+    ), [sheetUiPrefs.hiddenColumns]);
+
+    const visibleSheetColumns = useMemo(() => (
+        sheetsColumns.filter((column) => !hiddenSheetColumns.includes(column))
+    ), [hiddenSheetColumns, sheetsColumns]);
+
+    const sheetAutoColumnWidths = useMemo(() => {
+        const targetColumns = visibleSheetColumns;
+        if (targetColumns.length === 0) return {};
 
         const sampleRows = sheetFilteredData.slice(0, 140);
         const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
-        const weights = {};
 
-        for (const column of sheetsColumns) {
+        return targetColumns.reduce((acc, column) => {
             const normalized = normalizeCredentialText(column);
             const headerLen = String(column || '').trim().length;
             const lengths = sampleRows
@@ -1772,32 +1787,38 @@ export default function App() {
                 .filter((len) => len > 0)
                 .sort((a, b) => a - b);
 
-            const avgLen = lengths.length > 0 ? (lengths.reduce((acc, len) => acc + len, 0) / lengths.length) : 0;
-            const p70Len = lengths.length > 0 ? lengths[Math.floor((lengths.length - 1) * 0.7)] : 0;
+            const avgLen = lengths.length > 0 ? (lengths.reduce((sum, len) => sum + len, 0) / lengths.length) : 0;
+            const p75Len = lengths.length > 0 ? lengths[Math.floor((lengths.length - 1) * 0.75)] : 0;
+            let px = Math.max(headerLen * 8, avgLen * 7.2, p75Len * 6.5, 88);
 
-            let weight = Math.max(headerLen * 1.2, avgLen * 0.8, p70Len * 0.9, 6);
+            if (normalized.includes('nome subs')) px += 65;
+            if (normalized === 'cargo') px += 70;
+            if (normalized === 'candidato') px += 40;
+            if (normalized.includes('contato candidato')) px += 35;
+            if (normalized.includes('municipio') || normalized.includes('nre')) px += 45;
+            if (normalized === 'motivo') px += 45;
+            if (normalized.includes('obs')) px += 95;
 
-            // Regras de negócio para não penalizar colunas críticas.
-            if (normalized.includes('nome subs')) weight += 7;
-            if (normalized === 'cargo') weight += 7;
-            if (normalized === 'candidato') weight += 5;
-            if (normalized.includes('contato candidato')) weight += 4;
-            if (normalized.includes('municipio') || normalized.includes('nre')) weight += 5;
-            if (normalized === 'motivo') weight += 5;
-            if (normalized.includes('obs')) weight += 10;
-            if (normalized.includes('status') || normalized.includes('situacao')) weight += 2;
-
-            weights[column] = clamp(weight, 4.5, 26);
-        }
-
-        const totalWeight = Object.values(weights).reduce((acc, value) => acc + value, 0) || 1;
-        const dataColumnsBudgetPercent = 96;
-
-        return sheetsColumns.reduce((acc, column) => {
-            acc[column] = (weights[column] / totalWeight) * dataColumnsBudgetPercent;
+            acc[column] = clamp(Math.round(px), 70, 340);
             return acc;
         }, {});
-    }, [sheetFilteredData, sheetsColumns]);
+    }, [sheetFilteredData, visibleSheetColumns]);
+
+    const sheetWidthOverrides = useMemo(() => (
+        sheetUiPrefs.widthOverrides && typeof sheetUiPrefs.widthOverrides === 'object'
+            ? sheetUiPrefs.widthOverrides
+            : {}
+    ), [sheetUiPrefs.widthOverrides]);
+
+    const sheetColumnWidths = useMemo(() => (
+        visibleSheetColumns.reduce((acc, column) => {
+            const overrideWidth = Number(sheetWidthOverrides[column]);
+            acc[column] = Number.isFinite(overrideWidth) && overrideWidth > 40
+                ? overrideWidth
+                : (sheetAutoColumnWidths[column] || 100);
+            return acc;
+        }, {})
+    ), [sheetAutoColumnWidths, sheetWidthOverrides, visibleSheetColumns]);
 
     const gridTotalPages = useMemo(() => Math.max(1, Math.ceil(filteredData.length / GRID_PAGE_SIZE)), [filteredData.length]);
     const gridPagedData = useMemo(() => {
@@ -1828,6 +1849,99 @@ export default function App() {
     useEffect(() => {
         if (sheetPage > sheetTotalPages) setSheetPage(sheetTotalPages);
     }, [sheetPage, sheetTotalPages]);
+
+    useEffect(() => {
+        setSheetUiPrefs((current) => {
+            const safe = current && typeof current === 'object' ? current : { hiddenColumns: [], widthOverrides: {} };
+            const hidden = Array.isArray(safe.hiddenColumns)
+                ? safe.hiddenColumns.filter((column) => sheetsColumns.includes(column))
+                : [];
+            const widthOverrides = safe.widthOverrides && typeof safe.widthOverrides === 'object'
+                ? Object.fromEntries(Object.entries(safe.widthOverrides).filter(([column]) => sheetsColumns.includes(column)))
+                : {};
+
+            if (
+                JSON.stringify(hidden) === JSON.stringify(safe.hiddenColumns || [])
+                && JSON.stringify(widthOverrides) === JSON.stringify(safe.widthOverrides || {})
+            ) {
+                return safe;
+            }
+
+            return { hiddenColumns: hidden, widthOverrides };
+        });
+    }, [setSheetUiPrefs, sheetsColumns]);
+
+    useEffect(() => {
+        const handleOutsideClick = (event) => {
+            if (!isSheetColumnsPanelOpen) return;
+            if (sheetColumnsPanelRef.current && !sheetColumnsPanelRef.current.contains(event.target)) {
+                setIsSheetColumnsPanelOpen(false);
+            }
+        };
+
+        document.addEventListener('mousedown', handleOutsideClick);
+        return () => document.removeEventListener('mousedown', handleOutsideClick);
+    }, [isSheetColumnsPanelOpen]);
+
+    useEffect(() => {
+        const handleMouseMove = (event) => {
+            const state = sheetResizeStateRef.current;
+            if (!state) return;
+            const delta = event.clientX - state.startX;
+            const nextWidth = Math.max(70, Math.min(420, Math.round(state.startWidth + delta)));
+
+            setSheetUiPrefs((current) => {
+                const safe = current && typeof current === 'object' ? current : { hiddenColumns: [], widthOverrides: {} };
+                const currentOverrides = safe.widthOverrides && typeof safe.widthOverrides === 'object' ? safe.widthOverrides : {};
+                return {
+                    ...safe,
+                    widthOverrides: {
+                        ...currentOverrides,
+                        [state.column]: nextWidth,
+                    },
+                };
+            });
+        };
+
+        const handleMouseUp = () => {
+            if (sheetResizeStateRef.current) sheetResizeStateRef.current = null;
+        };
+
+        window.addEventListener('mousemove', handleMouseMove);
+        window.addEventListener('mouseup', handleMouseUp);
+        return () => {
+            window.removeEventListener('mousemove', handleMouseMove);
+            window.removeEventListener('mouseup', handleMouseUp);
+        };
+    }, [setSheetUiPrefs]);
+
+    const toggleSheetColumnVisibility = (column) => {
+        setSheetUiPrefs((current) => {
+            const safe = current && typeof current === 'object' ? current : { hiddenColumns: [], widthOverrides: {} };
+            const hidden = Array.isArray(safe.hiddenColumns) ? safe.hiddenColumns : [];
+            const isHidden = hidden.includes(column);
+            const nextHidden = isHidden ? hidden.filter((item) => item !== column) : [...hidden, column];
+
+            if (nextHidden.length >= sheetsColumns.length) return safe;
+
+            return { ...safe, hiddenColumns: nextHidden };
+        });
+    };
+
+    const resetSheetColumnsLayout = () => {
+        setSheetUiPrefs({ hiddenColumns: [], widthOverrides: {} });
+    };
+
+    const startSheetColumnResize = (column, event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const startWidth = sheetColumnWidths[column] || 120;
+        sheetResizeStateRef.current = {
+            column,
+            startX: event.clientX,
+            startWidth,
+        };
+    };
 
     useEffect(() => {
         if (!showTutorial || tutorialSection !== 'TABELA') return;
@@ -1911,7 +2025,7 @@ export default function App() {
         `}</style>
 
                 <header className="bg-white border-b border-slate-200 z-20 shadow-sm shrink-0">
-                    <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-3">
+                    <div className={`${activeTab === 'SHEETS' ? 'max-w-[2200px]' : 'max-w-[1600px]'} mx-auto px-4 sm:px-6 lg:px-8 py-3`}>
                         <div className="grid grid-cols-1 xl:grid-cols-[auto_minmax(320px,1fr)_minmax(520px,1.2fr)] items-center gap-3 xl:gap-5">
                             <div className="flex items-center gap-3 min-w-0 shrink-0">
                                 <div className="bg-indigo-600 p-2.5 rounded-xl shadow-sm shrink-0"><Briefcase className="w-5 h-5 text-white" /></div>
@@ -1923,7 +2037,7 @@ export default function App() {
 
                             <div className="min-w-0">
                                 <div id="tour-tabs" className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl overflow-x-auto hide-scrollbar w-full shadow-inner shadow-slate-200/60">
-                                    <button onClick={() => handleTabChange('TABELA')} className={`flex-1 inline-flex items-center justify-center gap-2 min-w-[148px] px-4 py-2.5 rounded-lg text-sm font-semibold transition-all duration-300 whitespace-nowrap ${activeTab === 'TABELA' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:bg-white/60 hover:text-slate-700'}`} type="button"><ListTodo className="w-4 h-4" /> <span>Tabela</span>{metrics?.invalidCount > 0 && <span className="w-2 h-2 rounded-full bg-red-500 ml-1 animate-pulse" />}</button>
+                                    <button onClick={() => handleTabChange('TABELA')} className={`flex-1 inline-flex items-center justify-center gap-2 min-w-[148px] px-4 py-2.5 rounded-lg text-sm font-semibold transition-all duration-300 whitespace-nowrap ${activeTab === 'TABELA' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:bg-white/60 hover:text-slate-700'}`} type="button"><ListTodo className="w-4 h-4" /> <span>Tabela</span>{metrics?.invalidCount > 0 && <span className="inline-flex items-center gap-1.5 ml-1"><span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" /><span className="text-[11px] font-bold text-red-600">{metrics.invalidCount}</span></span>}</button>
                                     <button id="tour-tab-dashboard" onClick={() => handleTabChange('DASHBOARD', { openTutorial: true })} className={`flex-1 inline-flex items-center justify-center gap-2 min-w-[148px] px-4 py-2.5 rounded-lg text-sm font-semibold transition-all duration-300 whitespace-nowrap ${activeTab === 'DASHBOARD' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:bg-white/60 hover:text-slate-700'}`} type="button"><LayoutDashboard className="w-4 h-4" /> <span>Graficos</span></button>
                                     <button id="tour-tab-sheets" onClick={() => handleTabChange('SHEETS', { openTutorial: true })} className={`flex-1 inline-flex items-center justify-center gap-2 min-w-[148px] px-4 py-2.5 rounded-lg text-sm font-semibold transition-all duration-300 whitespace-nowrap ${activeTab === 'SHEETS' ? 'bg-green-600 text-white shadow-sm' : 'text-green-700 hover:bg-white/60'}`} type="button"><TableProperties className="w-4 h-4" /> <span>Planilha</span></button>
                                 </div>
@@ -1958,7 +2072,7 @@ export default function App() {
                 </header>
 
                 <main ref={mainScrollRef} className={`flex-1 overflow-y-auto overflow-x-hidden relative w-full bg-slate-50 transition-all duration-400 ease-in-out ${isCinematic ? 'cinematic-effect' : ''}`}>
-                    <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full relative z-10 min-h-full flex flex-col">
+                    <div className={`${activeTab === 'SHEETS' ? 'max-w-[2200px]' : 'max-w-[1600px]'} mx-auto px-3 sm:px-4 lg:px-6 py-8 w-full relative z-10 min-h-full flex flex-col`}>
                         {data.length === 0 && !isInitialSyncing && (
                             <div className="flex flex-col items-center justify-center flex-1 text-center animate-in fade-in zoom-in-95 duration-500 my-auto">
                                 <div className="w-24 h-24 bg-indigo-50 rounded-full flex items-center justify-center mb-6"><Map className="w-12 h-12 text-indigo-400" /></div>
@@ -2117,31 +2231,68 @@ export default function App() {
 
                                     <p className="text-xs text-slate-600">Busca rapida: use a barra global ou escolha uma coluna + termo.</p>
 
-                                    <div className="mt-3 flex items-center justify-end">
+                                    <div className="mt-3 flex items-center justify-end gap-2">
+                                        <div ref={sheetColumnsPanelRef} className="relative">
+                                            <button onClick={() => setIsSheetColumnsPanelOpen((open) => !open)} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white text-slate-700 text-sm font-bold hover:bg-slate-100 border border-slate-300 shadow-sm transition-all" type="button">
+                                                <Sliders className="w-4 h-4" /> Colunas
+                                            </button>
+
+                                            {isSheetColumnsPanelOpen && (
+                                                <div className="absolute right-0 mt-2 w-[320px] max-h-[360px] overflow-hidden bg-white border border-slate-200 rounded-2xl shadow-xl z-20">
+                                                    <div className="px-4 py-3 border-b bg-slate-50 flex items-center justify-between">
+                                                        <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Exibir colunas</p>
+                                                        <button onClick={resetSheetColumnsLayout} className="text-xs font-bold text-indigo-600 hover:text-indigo-800" type="button">Resetar layout</button>
+                                                    </div>
+                                                    <div className="p-3 space-y-1 max-h-[280px] overflow-auto">
+                                                        {sheetsColumns.map((column) => {
+                                                            const checked = !hiddenSheetColumns.includes(column);
+                                                            return (
+                                                                <label key={`sheet-col-toggle-${column}`} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-50 cursor-pointer">
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        checked={checked}
+                                                                        onChange={() => toggleSheetColumnVisibility(column)}
+                                                                        disabled={checked && visibleSheetColumns.length <= 1}
+                                                                        className="rounded text-green-600 focus:ring-green-500"
+                                                                    />
+                                                                    <span className="text-sm text-slate-700 truncate">{column}</span>
+                                                                </label>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+
                                         <button onClick={openQuickAddModal} className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 shadow-sm hover:shadow-md transition-all" type="button"><PlusCircle className="w-5 h-5" /> Novo Cadastro (C)</button>
                                     </div>
                                 </div>
 
                                 <div className="overflow-auto flex-1 bg-slate-100 p-2">
-                                    <table className="w-full table-fixed text-left text-xs border-collapse bg-white shadow-sm ring-1 ring-slate-200">
+                                    <table className="w-max min-w-full table-fixed text-left text-xs border-collapse bg-white shadow-sm ring-1 ring-slate-200">
                                         <colgroup>
-                                            {sheetsColumns.map((column) => (
-                                                <col key={`sheet-col-${column}`} style={{ width: `${sheetColumnWidthPercent[column] || 0}%` }} />
+                                            {visibleSheetColumns.map((column) => (
+                                                <col key={`sheet-col-${column}`} style={{ width: `${sheetColumnWidths[column] || 100}px` }} />
                                             ))}
-                                            <col style={{ width: '4%' }} />
+                                            <col style={{ width: '72px' }} />
                                         </colgroup>
                                         <thead id="tour-sheets-head" className="bg-slate-100 border-b-2 border-slate-300 text-slate-700 font-bold text-xs sticky top-0 z-10 shadow-sm">
                                             <tr>
-                                                {sheetsColumns.map((column, index) => {
-                                                    const isLast = index === sheetsColumns.length - 1;
+                                                {visibleSheetColumns.map((column, index) => {
+                                                    const isLast = index === visibleSheetColumns.length - 1;
                                                     const isCandidateBlock = ['Candidato', 'Contato Candidato'].includes(column);
                                                     return (
                                                         <th
                                                             key={column}
                                                             title={column}
-                                                            className={`px-2 py-2 truncate ${isLast ? '' : 'border-r'} ${isCandidateBlock ? 'bg-green-50' : ''}`}
+                                                            className={`px-2 py-2 truncate relative select-none ${isLast ? '' : 'border-r'} ${isCandidateBlock ? 'bg-green-50' : ''}`}
                                                         >
                                                             {column}
+                                                            <div
+                                                                onMouseDown={(event) => startSheetColumnResize(column, event)}
+                                                                className="absolute right-0 top-0 h-full w-2 cursor-col-resize hover:bg-green-300/50"
+                                                                title="Arraste para ajustar largura"
+                                                            />
                                                         </th>
                                                     );
                                                 })}
@@ -2151,15 +2302,15 @@ export default function App() {
                                         <tbody key={`sheets-${tableAnimationKey}`} className="divide-y divide-slate-200 font-medium">
                                             {sheetFilteredData.length === 0 ? (
                                                 <tr>
-                                                    <td colSpan={sheetsColumns.length + 1} className="px-4 py-8 text-center text-slate-500 font-medium">
+                                                    <td colSpan={visibleSheetColumns.length + 1} className="px-4 py-8 text-center text-slate-500 font-medium">
                                                         Nenhum registro encontrado com os filtros aplicados
                                                     </td>
                                                 </tr>
                                             ) : (
                                                 sheetPagedData.map((row) => (
                                                     <tr key={row._id} className={`hover:bg-blue-50/50 transition-colors ${row._isInvalid ? 'bg-red-50' : ''}`}>
-                                                        {sheetsColumns.map((column, index) => {
-                                                            const isLast = index === sheetsColumns.length - 1;
+                                                        {visibleSheetColumns.map((column, index) => {
+                                                            const isLast = index === visibleSheetColumns.length - 1;
                                                             const isCandidateBlock = ['Candidato', 'Contato Candidato'].includes(column);
                                                             const isStatus = normalizeCredentialText(column) === 'status';
                                                             const isRequiredName = normalizeCredentialText(column) === normalizeCredentialText('Nome Subs');
