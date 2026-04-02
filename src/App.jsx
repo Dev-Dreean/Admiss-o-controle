@@ -309,6 +309,28 @@ const getPrazoValue = (row) => getRowValue(row, PRAZO_KEYS);
 const getPrazoKey = (row) => getRowKey(row, PRAZO_KEYS);
 const SHEETS_PRIORITY_COLUMNS = ['Status', 'Nome Subs', 'CARGO', 'Candidato', 'Contato Candidato', 'NRE / MUNICIPIO', 'Motivo', 'OBS:'];
 
+const getSheetColumnWidth = (columnName) => {
+    const normalized = normalizeCredentialText(columnName);
+
+    if (normalized.includes('nome subs')) return 210;
+    if (normalized === 'cargo') return 220;
+    if (normalized === 'candidato') return 170;
+    if (normalized.includes('contato candidato')) return 150;
+    if (normalized.includes('municipio') || normalized.includes('nre')) return 170;
+    if (normalized === 'motivo') return 170;
+    if (normalized.includes('obs')) return 260;
+    if (normalized.includes('projeto')) return 120;
+    if (normalized.includes('situacao') || normalized.includes('status')) return 130;
+    if (normalized.includes('protoc')) return 95;
+    if (normalized.includes('mat subs')) return 95;
+    if (normalized.includes('mes ref')) return 95;
+    if (normalized.includes('horario')) return 105;
+    if (normalized.includes('inicio') || normalized.includes('fim') || normalized.includes('data')) return 105;
+    if (normalized.includes('hora')) return 70;
+
+    return 95;
+};
+
 const DEFAULT_TUTORIAL_PROGRESS = Object.freeze({
     TABELA: false,
     DASHBOARD: false,
@@ -2082,6 +2104,12 @@ export default function App() {
 
                                 <div className="overflow-auto flex-1 bg-slate-100 p-2">
                                     <table className="w-full table-fixed text-left text-xs border-collapse bg-white shadow-sm ring-1 ring-slate-200">
+                                        <colgroup>
+                                            {sheetsColumns.map((column) => (
+                                                <col key={`sheet-col-${column}`} style={{ width: `${getSheetColumnWidth(column)}px` }} />
+                                            ))}
+                                            <col style={{ width: '72px' }} />
+                                        </colgroup>
                                         <thead id="tour-sheets-head" className="bg-slate-100 border-b-2 border-slate-300 text-slate-700 font-bold text-xs sticky top-0 z-10 shadow-sm">
                                             <tr>
                                                 {sheetsColumns.map((column, index) => {
@@ -2091,7 +2119,7 @@ export default function App() {
                                                         <th
                                                             key={column}
                                                             title={column}
-                                                            className={`px-2 py-2 min-w-0 truncate ${isLast ? '' : 'border-r'} ${isCandidateBlock ? 'bg-green-50' : ''}`}
+                                                            className={`px-2 py-2 truncate ${isLast ? '' : 'border-r'} ${isCandidateBlock ? 'bg-green-50' : ''}`}
                                                         >
                                                             {column}
                                                         </th>
@@ -2121,7 +2149,7 @@ export default function App() {
                                                             return (
                                                                 <td key={`${row._id}-${column}`} className={`${isLast ? '' : 'border-r'} p-0 min-w-0 ${isCandidateBlock ? 'bg-green-50/30' : ''} ${row._isInvalid && isRequiredName && !value.trim() ? 'ring-2 ring-inset ring-red-500 bg-red-50' : ''}`}>
                                                                     {isStatus ? (
-                                                                        <select value={value} onChange={(e) => handleInlineEdit(row._id, column, e.target.value)} className="w-full h-full px-2 py-1.5 text-xs appearance-none cursor-pointer focus:bg-blue-100 bg-transparent transition-colors truncate" title={value}>
+                                                                        <select value={value} onChange={(e) => handleInlineEdit(row._id, column, e.target.value)} className="w-full h-full px-2 py-1.5 text-xs appearance-none cursor-pointer focus:bg-blue-100 bg-transparent transition-colors" title={value}>
                                                                             <option value="ABERTA">ABERTA</option><option value="FECHADA">FECHADA</option><option value="ENCAMINHADA">ENCAMINHADA</option><option value="CANCELADA">CANCELADA</option><option value="PAUSADA">PAUSADA</option>
                                                                         </select>
                                                                     ) : (
