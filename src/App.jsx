@@ -309,28 +309,6 @@ const getPrazoValue = (row) => getRowValue(row, PRAZO_KEYS);
 const getPrazoKey = (row) => getRowKey(row, PRAZO_KEYS);
 const SHEETS_PRIORITY_COLUMNS = ['Status', 'Nome Subs', 'CARGO', 'Candidato', 'Contato Candidato', 'NRE / MUNICIPIO', 'Motivo', 'OBS:'];
 
-const getSheetColumnWidth = (columnName) => {
-    const normalized = normalizeCredentialText(columnName);
-
-    if (normalized.includes('nome subs')) return 210;
-    if (normalized === 'cargo') return 220;
-    if (normalized === 'candidato') return 170;
-    if (normalized.includes('contato candidato')) return 150;
-    if (normalized.includes('municipio') || normalized.includes('nre')) return 170;
-    if (normalized === 'motivo') return 170;
-    if (normalized.includes('obs')) return 260;
-    if (normalized.includes('projeto')) return 120;
-    if (normalized.includes('situacao') || normalized.includes('status')) return 130;
-    if (normalized.includes('protoc')) return 95;
-    if (normalized.includes('mat subs')) return 95;
-    if (normalized.includes('mes ref')) return 95;
-    if (normalized.includes('horario')) return 105;
-    if (normalized.includes('inicio') || normalized.includes('fim') || normalized.includes('data')) return 105;
-    if (normalized.includes('hora')) return 70;
-
-    return 95;
-};
-
 const DEFAULT_TUTORIAL_PROGRESS = Object.freeze({
     TABELA: false,
     DASHBOARD: false,
@@ -1779,6 +1757,48 @@ export default function App() {
         return result;
     }, [filteredData, sheetFilterColumn, sheetFilterTerm, sheetSearchTerm]);
 
+    const sheetColumnWidthPercent = useMemo(() => {
+        if (sheetsColumns.length === 0) return {};
+
+        const sampleRows = sheetFilteredData.slice(0, 140);
+        const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+        const weights = {};
+
+        for (const column of sheetsColumns) {
+            const normalized = normalizeCredentialText(column);
+            const headerLen = String(column || '').trim().length;
+            const lengths = sampleRows
+                .map((row) => String(row?.[column] || '').trim().length)
+                .filter((len) => len > 0)
+                .sort((a, b) => a - b);
+
+            const avgLen = lengths.length > 0 ? (lengths.reduce((acc, len) => acc + len, 0) / lengths.length) : 0;
+            const p70Len = lengths.length > 0 ? lengths[Math.floor((lengths.length - 1) * 0.7)] : 0;
+
+            let weight = Math.max(headerLen * 1.2, avgLen * 0.8, p70Len * 0.9, 6);
+
+            // Regras de negócio para não penalizar colunas críticas.
+            if (normalized.includes('nome subs')) weight += 7;
+            if (normalized === 'cargo') weight += 7;
+            if (normalized === 'candidato') weight += 5;
+            if (normalized.includes('contato candidato')) weight += 4;
+            if (normalized.includes('municipio') || normalized.includes('nre')) weight += 5;
+            if (normalized === 'motivo') weight += 5;
+            if (normalized.includes('obs')) weight += 10;
+            if (normalized.includes('status') || normalized.includes('situacao')) weight += 2;
+
+            weights[column] = clamp(weight, 4.5, 26);
+        }
+
+        const totalWeight = Object.values(weights).reduce((acc, value) => acc + value, 0) || 1;
+        const dataColumnsBudgetPercent = 96;
+
+        return sheetsColumns.reduce((acc, column) => {
+            acc[column] = (weights[column] / totalWeight) * dataColumnsBudgetPercent;
+            return acc;
+        }, {});
+    }, [sheetFilteredData, sheetsColumns]);
+
     const gridTotalPages = useMemo(() => Math.max(1, Math.ceil(filteredData.length / GRID_PAGE_SIZE)), [filteredData.length]);
     const gridPagedData = useMemo(() => {
         const safePage = Math.min(gridPage, gridTotalPages);
@@ -2106,9 +2126,9 @@ export default function App() {
                                     <table className="w-full table-fixed text-left text-xs border-collapse bg-white shadow-sm ring-1 ring-slate-200">
                                         <colgroup>
                                             {sheetsColumns.map((column) => (
-                                                <col key={`sheet-col-${column}`} style={{ width: `${getSheetColumnWidth(column)}px` }} />
+                                                <col key={`sheet-col-${column}`} style={{ width: `${sheetColumnWidthPercent[column] || 0}%` }} />
                                             ))}
-                                            <col style={{ width: '72px' }} />
+                                            <col style={{ width: '4%' }} />
                                         </colgroup>
                                         <thead id="tour-sheets-head" className="bg-slate-100 border-b-2 border-slate-300 text-slate-700 font-bold text-xs sticky top-0 z-10 shadow-sm">
                                             <tr>
