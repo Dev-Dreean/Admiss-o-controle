@@ -1455,7 +1455,16 @@ export default function App() {
     };
 
 
-    const validateData = (rows) => rows.map((row) => ({ ...row, _isInvalid: !row['Nome Subs'] || !row.Status || String(row['Nome Subs']).trim() === '' }));
+    const validateData = (rows) => {
+        const safeRows = Array.isArray(rows) ? rows : [];
+
+        return safeRows
+            .filter((row) => String(getRowValue(row, ['Nome Subs'])).trim() !== '')
+            .map((row) => ({
+                ...row,
+                _isInvalid: String(getRowValue(row, ['Status'])).trim() === '',
+            }));
+    };
 
     const handleGoogleSheetsSync = async () => {
         setIsGSheetsModalOpen(false);
@@ -2087,12 +2096,13 @@ export default function App() {
                                                         </th>
                                                     );
                                                 })}
+                                                <th className="px-3 py-2 min-w-[110px] text-right">Acoes</th>
                                             </tr>
                                         </thead>
                                         <tbody key={`sheets-${tableAnimationKey}`} className="divide-y divide-slate-200 font-medium">
                                             {sheetFilteredData.length === 0 ? (
                                                 <tr>
-                                                    <td colSpan={sheetsColumns.length} className="px-4 py-8 text-center text-slate-500 font-medium">
+                                                    <td colSpan={sheetsColumns.length + 1} className="px-4 py-8 text-center text-slate-500 font-medium">
                                                         Nenhum registro encontrado com os filtros aplicados
                                                     </td>
                                                 </tr>
@@ -2125,6 +2135,16 @@ export default function App() {
                                                                 </td>
                                                             );
                                                         })}
+                                                        <td className="px-2 py-1 text-right border-l border-slate-200 bg-white">
+                                                            <button
+                                                                onClick={() => requestDeleteRecord(row)}
+                                                                className="p-2.5 bg-white hover:bg-red-50 rounded-lg shadow-sm border border-slate-200 transition-all hover:border-red-300 hover:shadow-md active:scale-95"
+                                                                type="button"
+                                                                title="Excluir linha"
+                                                            >
+                                                                <Trash2 className="w-4 h-4 text-slate-600 hover:text-red-700" />
+                                                            </button>
+                                                        </td>
                                                     </tr>
                                                 ))
                                             )}
