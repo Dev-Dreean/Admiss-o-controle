@@ -299,6 +299,7 @@ const DEFAULT_TUTORIAL_PROGRESS = Object.freeze({
     SHEETS: false,
     NEW_FEATURES_TABLE: false,
     NEW_FEATURES_SHEETS: false,
+    PATCH_NOTES_VIEWED: false,
 });
 
 const normalizeTutorialProgress = (value) => ({
@@ -307,6 +308,7 @@ const normalizeTutorialProgress = (value) => ({
     SHEETS: Boolean(value?.SHEETS),
     NEW_FEATURES_TABLE: Boolean(value?.NEW_FEATURES_TABLE),
     NEW_FEATURES_SHEETS: Boolean(value?.NEW_FEATURES_SHEETS),
+    PATCH_NOTES_VIEWED: Boolean(value?.PATCH_NOTES_VIEWED),
 });
 
 const TUTORIAL_STEPS = {
@@ -453,6 +455,97 @@ const TUTORIAL_STEPS = {
             icon: <Sliders className="w-8 h-8 text-green-600" />,
         },
     ],
+};
+
+const PatchNotesModal = ({ onClose, onStartTutorial }) => {
+    return (
+        <div className="fixed inset-0 z-[200] bg-slate-900/60 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+            <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-300">
+                <div className="px-8 py-6 border-b bg-gradient-to-r from-indigo-50 to-purple-50 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                        <div className="bg-indigo-600 p-3 rounded-2xl">
+                            <BarChart2 className="w-6 h-6 text-white" />
+                        </div>
+                        <div>
+                            <h2 className="text-2xl font-black text-slate-800">Sistema Atualizado</h2>
+                            <p className="text-sm text-slate-500 mt-0.5">Veja as novidades implementadas</p>
+                        </div>
+                    </div>
+                    <button onClick={onClose} className="p-2 text-slate-400 hover:bg-slate-200 rounded-xl transition-colors" type="button">
+                        <X className="w-5 h-5" />
+                    </button>
+                </div>
+
+                <div className="p-8 overflow-y-auto flex-1 space-y-6">
+                    <div className="space-y-4">
+                        <div className="flex gap-4">
+                            <div className="flex-shrink-0">
+                                <div className="flex items-center justify-center h-10 w-10 rounded-full bg-emerald-100">
+                                    <PlusCircle className="h-6 w-6 text-emerald-600" />
+                                </div>
+                            </div>
+                            <div className="flex-1">
+                                <h3 className="text-lg font-bold text-slate-800">Cadastro Rápido</h3>
+                                <p className="text-slate-600 text-sm mt-1">Novo botão para inserir pessoas no sistema em segundos, sem sair da tela atual. Formulário completo com todos os campos em uma única aba.</p>
+                            </div>
+                        </div>
+
+                        <div className="flex gap-4">
+                            <div className="flex-shrink-0">
+                                <div className="flex items-center justify-center h-10 w-10 rounded-full bg-blue-100">
+                                    <Edit2 className="h-6 w-6 text-blue-600" />
+                                </div>
+                            </div>
+                            <div className="flex-1">
+                                <h3 className="text-lg font-bold text-slate-800">Edição completa de Fichas</h3>
+                                <p className="text-slate-600 text-sm mt-1">Agora você pode editar <strong>todos os campos</strong> da ficha diretamente no modal. Modo anterior era limitado a apenas alguns campos.</p>
+                            </div>
+                        </div>
+
+                        <div className="flex gap-4">
+                            <div className="flex-shrink-0">
+                                <div className="flex items-center justify-center h-10 w-10 rounded-full bg-orange-100">
+                                    <Sliders className="h-6 w-6 text-orange-600" />
+                                </div>
+                            </div>
+                            <div className="flex-1">
+                                <h3 className="text-lg font-bold text-slate-800">Filtros Simplificados</h3>
+                                <p className="text-slate-600 text-sm mt-1">Interface minimalista para pesquisar. Busca global + filtro rápido por coluna. Sem excesso de informações, ainda mais produtivo.</p>
+                            </div>
+                        </div>
+
+                        <div className="flex gap-4">
+                            <div className="flex-shrink-0">
+                                <div className="flex items-center justify-center h-10 w-10 rounded-full bg-purple-100">
+                                    <Briefcase className="h-6 w-6 text-purple-600" />
+                                </div>
+                            </div>
+                            <div className="flex-1">
+                                <h3 className="text-lg font-bold text-slate-800">Atalhos de Teclado</h3>
+                                <p className="text-slate-600 text-sm mt-1"><kbd className="px-2 py-1 bg-slate-100 border border-slate-300 rounded text-xs font-mono">C</kbd> abre cadastro rápido • <kbd className="px-2 py-1 bg-slate-100 border border-slate-300 rounded text-xs font-mono">F</kbd> foca busca global</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="bg-indigo-50 border border-indigo-200 rounded-2xl p-4">
+                        <p className="text-sm text-indigo-900">
+                            <span className="font-bold">💡 Dica:</span> Clique em "Me leve para lá" para conhecer essas funcionalidades em um tutorial prático e interativo.
+                        </p>
+                    </div>
+                </div>
+
+                <div className="px-8 py-4 border-t bg-slate-50 flex justify-end gap-3">
+                    <button onClick={onClose} className="px-6 py-2.5 text-slate-700 font-bold hover:bg-slate-200 rounded-xl transition-colors" type="button">
+                        Não obrigado
+                    </button>
+                    <button onClick={onStartTutorial} className="px-7 py-2.5 bg-indigo-600 text-white font-bold rounded-xl hover:bg-indigo-700 shadow-md active:scale-95 transition-all inline-flex items-center gap-2" type="button">
+                        <ChevronRight className="w-4 h-4" />
+                        Me leve para lá
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
 };
 
 const TUTORIAL_RECORD_MODAL_STEP_IDS = new Set(['table-record-fields', 'table-record-save']);
@@ -924,6 +1017,7 @@ export default function App() {
     const accountTutorialProgress = useMemo(() => normalizeTutorialProgress(savedAccount?.tutorialProgress || DEFAULT_TUTORIAL_PROGRESS), [savedAccount]);
     const [sessionTutorialProgress, setSessionTutorialProgress] = useState(DEFAULT_TUTORIAL_PROGRESS);
     const [showTutorial, setShowTutorial] = useState(false);
+    const [showPatchNotes, setShowPatchNotes] = useState(false);
     const [tutorialSection, setTutorialSection] = useState('TABELA');
     const [pendingTutorialSection, setPendingTutorialSection] = useState(null);
     const [tutorialActiveStep, setTutorialActiveStep] = useState(null);
@@ -1078,8 +1172,15 @@ export default function App() {
     }, [activeTab, data.length, isAuthenticated, accountTutorialProgress, sessionTutorialProgress, showTutorial, showWelcome]);
 
     useEffect(() => {
-        if (showWelcome || !isAuthenticated || data.length === 0 || showTutorial || activeTab !== 'TABELA' || hasCompletedTutorialSection('NEW_FEATURES_TABLE')) {
+        if (showWelcome || !isAuthenticated || data.length === 0 || showTutorial || showPatchNotes || activeTab !== 'TABELA' || hasCompletedTutorialSection('NEW_FEATURES_TABLE')) {
             return undefined;
+        }
+
+        if (!hasCompletedTutorialSection('PATCH_NOTES_VIEWED')) {
+            const timer = setTimeout(() => {
+                setShowPatchNotes(true);
+            }, 350);
+            return () => clearTimeout(timer);
         }
 
         const timer = setTimeout(() => {
@@ -1088,7 +1189,7 @@ export default function App() {
         }, 350);
 
         return () => clearTimeout(timer);
-    }, [activeTab, data.length, isAuthenticated, accountTutorialProgress, sessionTutorialProgress, showTutorial, showWelcome]);
+    }, [activeTab, data.length, isAuthenticated, accountTutorialProgress, sessionTutorialProgress, showTutorial, showWelcome, showPatchNotes]);
 
     useEffect(() => {
         if (showWelcome || !isAuthenticated || data.length === 0 || showTutorial || activeTab !== 'SHEETS' || hasCompletedTutorialSection('NEW_FEATURES_SHEETS')) {
@@ -1116,6 +1217,32 @@ export default function App() {
 
         return () => clearTimeout(timer);
     }, [activeTab, pendingTutorialSection, showTutorial, showWelcome]);
+
+    const handlePatchNotesClose = () => {
+        setShowPatchNotes(false);
+        if (savedAccount) {
+            persistAccount({
+                ...savedAccount,
+                tutorialProgress: {
+                    ...normalizeTutorialProgress(savedAccount.tutorialProgress || DEFAULT_TUTORIAL_PROGRESS),
+                    PATCH_NOTES_VIEWED: true,
+                },
+                updatedAt: new Date().toISOString(),
+            });
+        }
+        setSessionTutorialProgress((previous) => ({
+            ...previous,
+            PATCH_NOTES_VIEWED: true,
+        }));
+    };
+
+    const handlePatchNotesStartTutorial = () => {
+        handlePatchNotesClose();
+        setTimeout(() => {
+            setTutorialSection('NEW_FEATURES_TABLE');
+            setShowTutorial(true);
+        }, 200);
+    };
 
     const handleTutorialComplete = (section, dontShow) => {
         if (dontShow && savedAccount) {
@@ -1919,6 +2046,13 @@ export default function App() {
                     </div>
                 </main>
             </div>
+
+            {showPatchNotes && !showWelcome && isAuthenticated && (
+                <PatchNotesModal
+                    onClose={handlePatchNotesClose}
+                    onStartTutorial={handlePatchNotesStartTutorial}
+                />
+            )}
 
             {showTutorial && !showWelcome && tutorialSteps.length > 0 && (
                 <WalkthroughTour
