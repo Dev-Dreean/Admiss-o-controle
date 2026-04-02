@@ -485,7 +485,7 @@ const StatusBadge = ({ status, size = 'sm' }) => {
     );
 };
 
-const PatchNotesModal = ({ onClose, onStartTutorial }) => {
+const PatchNotesModal = ({ onClose, onStartTableTutorial, onStartSheetsTutorial }) => {
     return (
         <div className="fixed inset-0 z-[200] bg-slate-900/60 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
             <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-300">
@@ -553,22 +553,38 @@ const PatchNotesModal = ({ onClose, onStartTutorial }) => {
                                 <p className="text-slate-600 text-sm mt-1"><kbd className="px-2 py-1 bg-slate-100 border border-slate-300 rounded text-xs font-mono">C</kbd> abre cadastro rápido • <kbd className="px-2 py-1 bg-slate-100 border border-slate-300 rounded text-xs font-mono">F</kbd> foca busca global</p>
                             </div>
                         </div>
+
+                        <div className="flex gap-4">
+                            <div className="flex-shrink-0">
+                                <div className="flex items-center justify-center h-10 w-10 rounded-full bg-red-100">
+                                    <Trash2 className="h-6 w-6 text-red-600" />
+                                </div>
+                            </div>
+                            <div className="flex-1">
+                                <h3 className="text-lg font-bold text-slate-800">Remocao de Registro</h3>
+                                <p className="text-slate-600 text-sm mt-1">Agora e possivel excluir direto pela coluna de acoes na tabela e tambem dentro da ficha completa.</p>
+                            </div>
+                        </div>
                     </div>
 
                     <div className="bg-indigo-50 border border-indigo-200 rounded-2xl p-4">
                         <p className="text-sm text-indigo-900">
-                            <span className="font-bold">💡 Dica:</span> Clique em "Me leve para lá" para conhecer essas funcionalidades em um tutorial prático e interativo.
+                            <span className="font-bold">Dica:</span> Escolha o atalho abaixo para abrir o tutorial pratico da tela desejada.
                         </p>
                     </div>
                 </div>
 
-                <div className="px-8 py-4 border-t bg-slate-50 flex justify-end gap-3">
+                <div className="px-8 py-4 border-t bg-slate-50 flex flex-wrap justify-end gap-3">
                     <button onClick={onClose} className="px-6 py-2.5 text-slate-700 font-bold hover:bg-slate-200 rounded-xl transition-colors" type="button">
-                        Não obrigado
+                        Agora nao
                     </button>
-                    <button onClick={onStartTutorial} className="px-7 py-2.5 bg-indigo-600 text-white font-bold rounded-xl hover:bg-indigo-700 shadow-md active:scale-95 transition-all inline-flex items-center gap-2" type="button">
+                    <button onClick={onStartSheetsTutorial} className="px-6 py-2.5 bg-emerald-600 text-white font-bold rounded-xl hover:bg-emerald-700 shadow-md active:scale-95 transition-all inline-flex items-center gap-2" type="button">
                         <ChevronRight className="w-4 h-4" />
-                        Me leve para lá
+                        Tutorial Planilha
+                    </button>
+                    <button onClick={onStartTableTutorial} className="px-6 py-2.5 bg-indigo-600 text-white font-bold rounded-xl hover:bg-indigo-700 shadow-md active:scale-95 transition-all inline-flex items-center gap-2" type="button">
+                        <ChevronRight className="w-4 h-4" />
+                        Tutorial Tabela
                     </button>
                 </div>
             </div>
@@ -1265,12 +1281,22 @@ export default function App() {
         }));
     };
 
-    const handlePatchNotesStartTutorial = () => {
+    const handlePatchNotesStartTableTutorial = () => {
         handlePatchNotesClose();
         setTimeout(() => {
+            setActiveTab('TABELA');
             setTutorialSection('NEW_FEATURES_TABLE');
             setShowTutorial(true);
         }, 200);
+    };
+
+    const handlePatchNotesStartSheetsTutorial = () => {
+        handlePatchNotesClose();
+        setTimeout(() => {
+            setActiveTab('SHEETS');
+            setTutorialSection('NEW_FEATURES_SHEETS');
+            setShowTutorial(true);
+        }, 220);
     };
 
     const handleTutorialComplete = (section, dontShow) => {
@@ -1533,6 +1559,20 @@ export default function App() {
         setDeleteConfirmOpen(false);
         setIsEditing(false);
         setEditFormData({});
+    };
+
+    const handleDeleteRecordById = (recordId) => {
+        if (!recordId) return;
+        const confirmed = window.confirm('Deseja excluir este registro?');
+        if (!confirmed) return;
+
+        setAppData((prev) => validateData((Array.isArray(prev) ? prev : []).filter((item) => item._id !== recordId)));
+        if (selectedRecord?._id === recordId) {
+            setSelectedRecord(null);
+            setDeleteConfirmOpen(false);
+            setIsEditing(false);
+            setEditFormData({});
+        }
     };
 
     const addCustomChart = () => {
@@ -1898,7 +1938,7 @@ export default function App() {
                                 <div className="overflow-x-auto relative flex-1 min-h-[400px]">
                                     <table className="w-full text-left text-sm whitespace-nowrap">
                                         <thead id="tour-table-head" className="bg-slate-800 border-b border-slate-700 text-slate-200 font-semibold text-xs uppercase tracking-wider sticky top-0 z-10">
-                                            <tr><th id="tour-table-col-status" className="px-6 py-4">Status Rapido</th><th id="tour-table-col-vaga" className="px-6 py-4">Vaga</th><th id="tour-table-col-candidato" className="px-6 py-4">Candidato</th><th id="tour-table-col-prazo" className="px-6 py-4">Prazo</th><th id="tour-table-col-ficha" className="px-6 py-4 text-right">Ficha</th></tr>
+                                            <tr><th id="tour-table-col-status" className="px-6 py-4">Status Rapido</th><th id="tour-table-col-vaga" className="px-6 py-4">Vaga</th><th id="tour-table-col-candidato" className="px-6 py-4">Candidato</th><th id="tour-table-col-prazo" className="px-6 py-4">Prazo</th><th id="tour-table-col-ficha" className="px-6 py-4 text-right">Acoes</th></tr>
                                         </thead>
                                         <tbody id="tour-table" key={tableAnimationKey} className="divide-y divide-slate-200/50">
                                             {gridPagedData.map((row, index) => {
@@ -1925,7 +1965,16 @@ export default function App() {
                                                                 )}
                                                             </td>
                                                         </>
-                                                        <td className="px-6 py-4 text-right"><button id={index === 0 ? 'tour-record-open-btn' : undefined} onClick={() => { setSelectedRecord(row); setIsEditing(false); }} className="p-2.5 bg-white hover:bg-indigo-50 rounded-lg shadow-sm border border-slate-200 transition-all hover:border-indigo-300 hover:shadow-md active:scale-95" type="button"><Edit2 className="w-4 h-4 text-slate-600 hover:text-indigo-700" /></button></td>
+                                                        <td className="px-6 py-4 text-right">
+                                                            <div className="inline-flex items-center gap-2">
+                                                                <button id={index === 0 ? 'tour-record-open-btn' : undefined} onClick={() => { setSelectedRecord(row); setIsEditing(false); setDeleteConfirmOpen(false); }} className="p-2.5 bg-white hover:bg-indigo-50 rounded-lg shadow-sm border border-slate-200 transition-all hover:border-indigo-300 hover:shadow-md active:scale-95" type="button" title="Abrir ficha">
+                                                                    <Edit2 className="w-4 h-4 text-slate-600 hover:text-indigo-700" />
+                                                                </button>
+                                                                <button onClick={() => handleDeleteRecordById(row._id)} className="p-2.5 bg-white hover:bg-red-50 rounded-lg shadow-sm border border-slate-200 transition-all hover:border-red-300 hover:shadow-md active:scale-95" type="button" title="Excluir registro">
+                                                                    <Trash2 className="w-4 h-4 text-slate-600 hover:text-red-700" />
+                                                                </button>
+                                                            </div>
+                                                        </td>
                                                     </tr>
                                                 );
                                             })}
@@ -2088,7 +2137,8 @@ export default function App() {
             {showPatchNotes && !showWelcome && isAuthenticated && (
                 <PatchNotesModal
                     onClose={handlePatchNotesClose}
-                    onStartTutorial={handlePatchNotesStartTutorial}
+                    onStartTableTutorial={handlePatchNotesStartTableTutorial}
+                    onStartSheetsTutorial={handlePatchNotesStartSheetsTutorial}
                 />
             )}
 
