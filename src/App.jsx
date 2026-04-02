@@ -470,6 +470,27 @@ const TUTORIAL_STEPS = {
             desc: 'Aqui voce filtra a planilha com busca global e um filtro rapido por coluna, sem poluicao visual.',
             icon: <Sliders className="w-8 h-8 text-green-600" />,
         },
+        {
+            id: 'new-features-columns-panel',
+            target: 'tour-sheets-columns-panel-btn',
+            title: 'Colunas inteligentes',
+            desc: 'No botao Colunas voce escolhe o que aparece na planilha e ajusta o layout para o seu fluxo.',
+            icon: <TableProperties className="w-8 h-8 text-emerald-600" />,
+        },
+        {
+            id: 'new-features-actions-delete',
+            target: 'tour-sheets-actions-col',
+            title: 'Acoes e exclusao',
+            desc: 'A coluna Acoes fica no lado direito da planilha. Role para a direita para chegar nela e excluir uma linha pela lixeira.',
+            icon: <Trash2 className="w-8 h-8 text-rose-600" />,
+        },
+        {
+            id: 'new-features-horizontal-scroll',
+            target: 'tour-sheets-horizontal-scroll',
+            title: 'Rolagem lateral rapida',
+            desc: 'Para navegar nas laterais com mais controle, segure Shift e use o scroll do mouse: isso move horizontalmente a planilha.',
+            icon: <ChevronRight className="w-8 h-8 text-indigo-500" />,
+        },
     ],
 };
 
@@ -2233,7 +2254,7 @@ export default function App() {
 
                                     <div className="mt-3 flex items-center justify-end gap-2">
                                         <div ref={sheetColumnsPanelRef} className="relative">
-                                            <button onClick={() => setIsSheetColumnsPanelOpen((open) => !open)} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white text-slate-700 text-sm font-bold hover:bg-slate-100 border border-slate-300 shadow-sm transition-all" type="button">
+                                            <button id="tour-sheets-columns-panel-btn" onClick={() => setIsSheetColumnsPanelOpen((open) => !open)} className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white text-slate-700 text-sm font-bold hover:bg-slate-100 border border-slate-300 shadow-sm transition-all" type="button">
                                                 <Sliders className="w-4 h-4" /> Colunas
                                             </button>
 
@@ -2268,7 +2289,7 @@ export default function App() {
                                     </div>
                                 </div>
 
-                                <div className="overflow-auto flex-1 bg-slate-100 p-2">
+                                <div id="tour-sheets-horizontal-scroll" className="overflow-auto flex-1 bg-slate-100 p-2">
                                     <table className="w-max min-w-full table-fixed text-left text-xs border-collapse bg-white shadow-sm ring-1 ring-slate-200">
                                         <colgroup>
                                             {visibleSheetColumns.map((column) => (
@@ -2296,7 +2317,7 @@ export default function App() {
                                                         </th>
                                                     );
                                                 })}
-                                                <th className="px-2 py-2 w-[72px] text-right">Acoes</th>
+                                                <th id="tour-sheets-actions-col" className="px-2 py-2 w-[72px] text-right">Acoes</th>
                                             </tr>
                                         </thead>
                                         <tbody key={`sheets-${tableAnimationKey}`} className="divide-y divide-slate-200 font-medium">
