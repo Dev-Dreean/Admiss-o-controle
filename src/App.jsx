@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef, memo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
     UploadCloud, FileSpreadsheet, AlertCircle, Users, Search,
     X, ChevronRight, Briefcase, Download, Edit2, Save,
@@ -289,12 +289,14 @@ const DEFAULT_TUTORIAL_PROGRESS = Object.freeze({
     TABELA: false,
     DASHBOARD: false,
     SHEETS: false,
+    NEW_FEATURES: false,
 });
 
 const normalizeTutorialProgress = (value) => ({
     TABELA: Boolean(value?.TABELA),
     DASHBOARD: Boolean(value?.DASHBOARD),
     SHEETS: Boolean(value?.SHEETS),
+    NEW_FEATURES: Boolean(value?.NEW_FEATURES),
 });
 
 const TUTORIAL_STEPS = {
@@ -414,6 +416,29 @@ const TUTORIAL_STEPS = {
             title: 'Linhas editaveis',
             desc: 'Todas as alteracoes feitas nas linhas desta planilha entram direto no painel e ajudam a manter a base atualizada.',
             icon: <Check className="w-8 h-8 text-emerald-500" />,
+        },
+    ],
+    NEW_FEATURES: [
+        {
+            id: 'new-features-quick-add',
+            target: 'tour-quick-add-btn',
+            title: 'Novo cadastro rapido',
+            desc: 'Use este botao para inserir uma pessoa nova no sistema em segundos, sem sair da tela atual.',
+            icon: <PlusCircle className="w-8 h-8 text-emerald-500" />,
+        },
+        {
+            id: 'new-features-quick-add-modal',
+            target: 'tour-quick-add-modal',
+            title: 'Modal de cadastro',
+            desc: 'Neste modal voce cadastra campos principais e, se precisar, expande para preencher todos os campos da planilha.',
+            icon: <Edit2 className="w-8 h-8 text-indigo-500" />,
+        },
+        {
+            id: 'new-features-dynamic-filters',
+            target: 'tour-sheets-dynamic-filters',
+            title: 'Filtros dinamicos',
+            desc: 'Agora cada coluna aceita filtro por lista e por texto. Assim voce encontra registros mesmo em bases muito grandes.',
+            icon: <Sliders className="w-8 h-8 text-green-600" />,
         },
     ],
 };
@@ -895,15 +920,18 @@ export default function App() {
     const [loading, setLoading] = useState(false);
     const [isInitialSyncing, setIsInitialSyncing] = useState(false);
     const [activeTab, setActiveTab] = useState('TABELA');
-    const [gridViewMode, setGridViewMode] = useState('COMPACT');
     const [gridPage, setGridPage] = useState(1);
     const [searchTerm, setSearchTerm] = useState('');
     const [filters, setFilters] = useState({ status: 'TODOS', municipio: 'TODOS', motivo: 'TODOS', urgencia: 'TODOS' });
     const [showErrorsOnly, setShowErrorsOnly] = useState(false);
     const [sheetSearchTerm, setSheetSearchTerm] = useState('');
     const [sheetFilters, setSheetFilters] = useState({});
+    const [sheetTextFilters, setSheetTextFilters] = useState({});
     const [sheetShowFiltersPanel, setSheetShowFiltersPanel] = useState(false);
     const [sheetPage, setSheetPage] = useState(1);
+    const [isQuickAddModalOpen, setIsQuickAddModalOpen] = useState(false);
+    const [quickAddData, setQuickAddData] = useState({});
+    const [quickAddShowAllFields, setQuickAddShowAllFields] = useState(false);
 
     const [selectedRecord, setSelectedRecord] = useState(null);
     const [isEditing, setIsEditing] = useState(false);
@@ -952,7 +980,6 @@ export default function App() {
     }, [chartsOwnerKey, customChartsStore]);
     const tutorialSteps = TUTORIAL_STEPS[tutorialSection] || [];
     const hasCompletedTutorialSection = (section) => savedTutorialProgress[section] || sessionTutorialProgress[section];
-    const editPrazoFieldKey = useMemo(() => getPrazoKey(editFormData), [editFormData]);
     const resetAuthenticatedUi = () => {
         setIsAuthenticated(false);
         setCurrentUsername('');
@@ -1033,6 +1060,19 @@ export default function App() {
 
         return () => clearTimeout(timer);
     }, [activeTab, data.length, isAuthenticated, savedTutorialProgress, sessionTutorialProgress, showTutorial, showWelcome]);
+
+    useEffect(() => {
+        if (showWelcome || !isAuthenticated || data.length === 0 || showTutorial || hasCompletedTutorialSection('NEW_FEATURES')) {
+            return undefined;
+        }
+
+        const timer = setTimeout(() => {
+            setTutorialSection('NEW_FEATURES');
+            setShowTutorial(true);
+        }, 350);
+
+        return () => clearTimeout(timer);
+    }, [data.length, isAuthenticated, savedTutorialProgress, sessionTutorialProgress, showTutorial, showWelcome]);
 
     useEffect(() => {
         if (!pendingTutorialSection || activeTab !== pendingTutorialSection || showTutorial || showWelcome) {
@@ -1248,8 +1288,42 @@ export default function App() {
         setAppData((prevData) => validateData((Array.isArray(prevData) ? prevData : []).map((item) => (item._id === id ? { ...item, [field]: value } : item))));
     };
 
+    const openQuickAddModal = () => {
+        const base = {};
+        detailedColumns.forEach((column) => {
+            base[column] = '';
+        });
+        if (Object.prototype.hasOwnProperty.call(base, 'Status')) base.Status = 'ABERTA';
+        setQuickAddData(base);
+        setQuickAddShowAllFields(false);
+        setIsQuickAddModalOpen(true);
+    };
+
+    const handleQuickAddSave = () => {
+        const nomeKey = getRowKey(quickAddData, ['Nome Subs']);
+        const statusKey = getRowKey(quickAddData, ['Status']);
+        const nomeValue = String(quickAddData[nomeKey] || '').trim();
+        if (!nomeValue) {
+            alert('Preencha pelo menos o campo Nome Subs para salvar.');
+            return;
+        }
+
+        const record = {
+            ...quickAddData,
+            [statusKey || 'Status']: String(quickAddData[statusKey] || 'ABERTA').trim() || 'ABERTA',
+            _id: Date.now(),
+        };
+
+        setAppData((prev) => validateData([record, ...(Array.isArray(prev) ? prev : [])]));
+        setIsQuickAddModalOpen(false);
+    };
+
     const handleEditClick = () => {
-        setEditFormData({ ...selectedRecord });
+        const normalized = { ...selectedRecord };
+        detailedColumns.forEach((column) => {
+            if (normalized[column] === undefined || normalized[column] === null) normalized[column] = '';
+        });
+        setEditFormData(normalized);
         setIsEditing(true);
     };
 
@@ -1392,6 +1466,24 @@ export default function App() {
         return [...prioritized, ...others];
     }, [filteredData]);
 
+    const detailedColumns = useMemo(() => {
+        if (sheetsColumns.length > 0) return sheetsColumns;
+        if (selectedRecord && typeof selectedRecord === 'object') {
+            return Object.keys(selectedRecord).filter((column) => !['_id', '_isInvalid'].includes(column));
+        }
+        return SHEETS_PRIORITY_COLUMNS;
+    }, [selectedRecord, sheetsColumns]);
+
+    const quickAddPrimaryColumns = useMemo(() => {
+        const preferred = ['Status', 'Nome Subs', 'CARGO', 'Candidato', 'Contato Candidato', 'NRE / MUNICIPIO', 'Motivo', getPrazoKey(data[0] || {}), 'OBS:'];
+        return preferred.filter((column, index) => preferred.indexOf(column) === index && detailedColumns.includes(column));
+    }, [data, detailedColumns]);
+
+    const quickAddExtraColumns = useMemo(
+        () => detailedColumns.filter((column) => !quickAddPrimaryColumns.includes(column)),
+        [detailedColumns, quickAddPrimaryColumns],
+    );
+
     const sheetColumnOptions = useMemo(() => {
         const optionsByColumn = {};
 
@@ -1436,8 +1528,15 @@ export default function App() {
             }
         });
 
+        // Aplicar filtros de texto por coluna (contém)
+        Object.entries(sheetTextFilters).forEach(([column, value]) => {
+            const term = String(value || '').trim().toLowerCase();
+            if (!term) return;
+            result = result.filter((row) => String(row[column] || '').toLowerCase().includes(term));
+        });
+
         return result;
-    }, [filteredData, sheetSearchTerm, sheetFilters]);
+    }, [filteredData, sheetSearchTerm, sheetFilters, sheetTextFilters]);
 
     const gridTotalPages = useMemo(() => Math.max(1, Math.ceil(filteredData.length / GRID_PAGE_SIZE)), [filteredData.length]);
     const gridPagedData = useMemo(() => {
@@ -1459,7 +1558,7 @@ export default function App() {
 
     useEffect(() => {
         setSheetPage(1);
-    }, [sheetSearchTerm, sheetFilters]);
+    }, [sheetSearchTerm, sheetFilters, sheetTextFilters]);
 
     useEffect(() => {
         if (gridPage > gridTotalPages) setGridPage(gridTotalPages);
@@ -1585,25 +1684,11 @@ export default function App() {
                                     </div>
 
                                     <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-                                        <div className="inline-flex rounded-lg border border-slate-300 bg-white p-1 shadow-sm">
-                                            <button
-                                                onClick={() => setGridViewMode('COMPACT')}
-                                                className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all ${gridViewMode === 'COMPACT' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
-                                                type="button"
-                                            >
-                                                Grid Enxuto
-                                            </button>
-                                            <button
-                                                onClick={() => setGridViewMode('COMPLETE')}
-                                                className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all ${gridViewMode === 'COMPLETE' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
-                                                type="button"
-                                            >
-                                                Grid Completo
-                                            </button>
+                                        <div className="inline-flex items-center gap-2">
+                                            <button id="tour-quick-add-btn" onClick={openQuickAddModal} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700 transition-all" type="button"><PlusCircle className="w-4 h-4" /> Novo Cadastro</button>
+                                            <button onClick={() => { setTutorialSection('NEW_FEATURES'); setShowTutorial(true); }} className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white border border-slate-300 text-slate-700 text-xs font-semibold hover:bg-slate-100 transition-all" type="button"><Sliders className="w-4 h-4" /> Ver Micro Tutorial</button>
                                         </div>
-                                        <div className="text-xs text-slate-600 font-semibold">
-                                            Pagina {gridPage} de {gridTotalPages}
-                                        </div>
+                                        <div className="text-xs text-slate-600 font-semibold">Pagina {gridPage} de {gridTotalPages}</div>
                                     </div>
 
                                     <div id="tour-filters-controls" className="grid grid-cols-1 md:grid-cols-5 gap-3">
@@ -1622,16 +1707,7 @@ export default function App() {
                                 <div className="overflow-x-auto relative flex-1 min-h-[400px]">
                                     <table className="w-full text-left text-sm whitespace-nowrap">
                                         <thead id="tour-table-head" className="bg-slate-800 border-b border-slate-700 text-slate-200 font-semibold text-xs uppercase tracking-wider sticky top-0 z-10">
-                                            {gridViewMode === 'COMPACT' ? (
-                                                <tr><th id="tour-table-col-status" className="px-6 py-4">Status Rapido</th><th id="tour-table-col-vaga" className="px-6 py-4">Vaga</th><th id="tour-table-col-candidato" className="px-6 py-4">Candidato</th><th id="tour-table-col-prazo" className="px-6 py-4">Prazo</th><th id="tour-table-col-ficha" className="px-6 py-4 text-right">Ficha</th></tr>
-                                            ) : (
-                                                <tr>
-                                                    {sheetsColumns.map((column) => (
-                                                        <th key={`grid-full-${column}`} className="px-4 py-3 border-r border-slate-700">{column}</th>
-                                                    ))}
-                                                    <th id="tour-table-col-ficha" className="px-6 py-4 text-right">Ficha</th>
-                                                </tr>
-                                            )}
+                                            <tr><th id="tour-table-col-status" className="px-6 py-4">Status Rapido</th><th id="tour-table-col-vaga" className="px-6 py-4">Vaga</th><th id="tour-table-col-candidato" className="px-6 py-4">Candidato</th><th id="tour-table-col-prazo" className="px-6 py-4">Prazo</th><th id="tour-table-col-ficha" className="px-6 py-4 text-right">Ficha</th></tr>
                                         </thead>
                                         <tbody id="tour-table" key={tableAnimationKey} className="divide-y divide-slate-200/50">
                                             {gridPagedData.map((row, index) => {
@@ -1641,31 +1717,23 @@ export default function App() {
                                                 const diasParaInicio = getDaysDiff(prazoValue);
                                                 return (
                                                     <tr key={row._id} className={`${getRowThermalClass(diasParaInicio, status, candidato, row._isInvalid)} group anim-cascade transition-all duration-300 hover:shadow-sm`} style={{ animationDelay: `${index * 15}ms` }}>
-                                                        {gridViewMode === 'COMPACT' ? (
-                                                            <>
-                                                                <td className="px-6 py-4 relative">
-                                                                    {row._isInvalid && <AlertCircle className="absolute left-1 top-1/2 -translate-y-1/2 w-4 h-4 text-red-600 animate-pulse" />}
-                                                                    <select value={status} onChange={(e) => handleInlineEdit(row._id, 'Status', e.target.value)} className={`appearance-none w-32 ml-2 px-2 py-1.5 rounded-lg text-xs font-bold cursor-pointer focus:ring-2 focus:ring-indigo-500 shadow-sm transition-all ${STATUS_COLORS[status] || 'bg-slate-100 text-slate-800 border-slate-200'}`}>
-                                                                        <option value="ABERTA">ABERTA</option><option value="FECHADA">FECHADA</option><option value="ENCAMINHADA">ENCAMINHADA</option><option value="CANCELADA">CANCELADA</option><option value="PAUSADA">PAUSADA</option>
-                                                                    </select>
-                                                                </td>
-                                                                <td className="px-6 py-4"><div className={`font-bold ${row._isInvalid ? 'text-red-700' : 'text-slate-900'}`}>{row['Nome Subs'] || 'FALTANDO'}</div><div className="text-slate-600 text-xs mt-0.5">{row.CARGO} • {row['NRE / MUNICIPIO']}</div></td>
-                                                                <td className="px-6 py-4"><div className={`font-bold ${candidato === 'SEM COBERTURA' ? 'text-red-700' : 'text-slate-800'}`}>{candidato}</div><div className="text-slate-500 text-xs mt-0.5">{row['Contato Candidato'] || 'Sem contato'}</div></td>
-                                                                <td className="px-6 py-4"><div className="font-bold text-slate-800">{prazoValue || 'Sem prazo'}</div>
-                                                                    {diasParaInicio !== null && !['FECHADA', 'ENCAMINHADA', 'CANCELADA'].includes(status) && candidato === 'SEM COBERTURA' && (
-                                                                        <div className={`text-xs mt-1 font-bold inline-block px-2 py-0.5 rounded shadow-sm transition-transform group-hover:scale-105 ${diasParaInicio < 0 ? 'bg-red-600 text-white' : diasParaInicio === 0 ? 'bg-red-500 text-white' : diasParaInicio <= 5 ? 'bg-orange-500 text-white' : diasParaInicio <= 15 ? 'bg-yellow-400 text-yellow-900' : diasParaInicio <= 30 ? 'bg-lime-500 text-lime-900' : 'bg-green-500 text-white'}`}>
-                                                                            {diasParaInicio < 0 ? `Atrasado ${Math.abs(diasParaInicio)}d` : diasParaInicio === 0 ? 'E Hoje!' : `Faltam ${diasParaInicio}d`}
-                                                                        </div>
-                                                                    )}
-                                                                </td>
-                                                            </>
-                                                        ) : (
-                                                            sheetsColumns.map((column) => (
-                                                                <td key={`grid-full-cell-${row._id}-${column}`} className="px-4 py-3 border-r border-slate-200 text-slate-700 max-w-[260px] truncate">
-                                                                    {String(row[column] || '-')}
-                                                                </td>
-                                                            ))
-                                                        )}
+                                                        <>
+                                                            <td className="px-6 py-4 relative">
+                                                                {row._isInvalid && <AlertCircle className="absolute left-1 top-1/2 -translate-y-1/2 w-4 h-4 text-red-600 animate-pulse" />}
+                                                                <select value={status} onChange={(e) => handleInlineEdit(row._id, 'Status', e.target.value)} className={`appearance-none w-32 ml-2 px-2 py-1.5 rounded-lg text-xs font-bold cursor-pointer focus:ring-2 focus:ring-indigo-500 shadow-sm transition-all ${STATUS_COLORS[status] || 'bg-slate-100 text-slate-800 border-slate-200'}`}>
+                                                                    <option value="ABERTA">ABERTA</option><option value="FECHADA">FECHADA</option><option value="ENCAMINHADA">ENCAMINHADA</option><option value="CANCELADA">CANCELADA</option><option value="PAUSADA">PAUSADA</option>
+                                                                </select>
+                                                            </td>
+                                                            <td className="px-6 py-4"><div className={`font-bold ${row._isInvalid ? 'text-red-700' : 'text-slate-900'}`}>{row['Nome Subs'] || 'FALTANDO'}</div><div className="text-slate-600 text-xs mt-0.5">{row.CARGO} • {row['NRE / MUNICIPIO']}</div></td>
+                                                            <td className="px-6 py-4"><div className={`font-bold ${candidato === 'SEM COBERTURA' ? 'text-red-700' : 'text-slate-800'}`}>{candidato}</div><div className="text-slate-500 text-xs mt-0.5">{row['Contato Candidato'] || 'Sem contato'}</div></td>
+                                                            <td className="px-6 py-4"><div className="font-bold text-slate-800">{prazoValue || 'Sem prazo'}</div>
+                                                                {diasParaInicio !== null && !['FECHADA', 'ENCAMINHADA', 'CANCELADA'].includes(status) && candidato === 'SEM COBERTURA' && (
+                                                                    <div className={`text-xs mt-1 font-bold inline-block px-2 py-0.5 rounded shadow-sm transition-transform group-hover:scale-105 ${diasParaInicio < 0 ? 'bg-red-600 text-white' : diasParaInicio === 0 ? 'bg-red-500 text-white' : diasParaInicio <= 5 ? 'bg-orange-500 text-white' : diasParaInicio <= 15 ? 'bg-yellow-400 text-yellow-900' : diasParaInicio <= 30 ? 'bg-lime-500 text-lime-900' : 'bg-green-500 text-white'}`}>
+                                                                        {diasParaInicio < 0 ? `Atrasado ${Math.abs(diasParaInicio)}d` : diasParaInicio === 0 ? 'E Hoje!' : `Faltam ${diasParaInicio}d`}
+                                                                    </div>
+                                                                )}
+                                                            </td>
+                                                        </>
                                                         <td className="px-6 py-4 text-right"><button id={index === 0 ? 'tour-record-open-btn' : undefined} onClick={() => { setSelectedRecord(row); setIsEditing(false); }} className="p-2.5 bg-white hover:bg-indigo-50 rounded-lg shadow-sm border border-slate-200 transition-all hover:border-indigo-300 hover:shadow-md active:scale-95" type="button"><Edit2 className="w-4 h-4 text-slate-600 hover:text-indigo-700" /></button></td>
                                                     </tr>
                                                 );
@@ -1704,7 +1772,10 @@ export default function App() {
                             <div id="tour-sheets-table" className="bg-white shadow-xl border border-green-300 rounded-lg flex flex-col flex-1 min-h-[600px] overflow-hidden animate-in fade-in zoom-in-[0.98] duration-500">
                                 <div className="bg-green-600 text-white p-3 flex justify-between items-center shadow-sm z-10 shrink-0">
                                     <div className="flex items-center gap-2"><TableProperties className="w-5 h-5 text-green-100" /><h2 className="font-bold">Planilha editável</h2></div>
-                                    <div className="text-sm font-semibold">Exibindo {sheetFilteredData.length} de {filteredData.length} registros</div>
+                                    <div className="flex items-center gap-2">
+                                        <button onClick={openQuickAddModal} className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/20 hover:bg-white/30 text-white text-xs font-bold" type="button"><PlusCircle className="w-4 h-4" /> Novo Cadastro</button>
+                                        <div className="text-sm font-semibold">Exibindo {sheetFilteredData.length} de {filteredData.length} registros</div>
+                                    </div>
                                 </div>
 
                                 {/* Barra de Filtros da Planilha */}
@@ -1720,16 +1791,15 @@ export default function App() {
                                         />
                                         <button
                                             onClick={() => setSheetShowFiltersPanel(!sheetShowFiltersPanel)}
-                                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
-                                                sheetShowFiltersPanel ? 'bg-green-600 text-white shadow-sm' : 'bg-white text-slate-700 hover:bg-green-100'
-                                            }`}
+                                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${sheetShowFiltersPanel ? 'bg-green-600 text-white shadow-sm' : 'bg-white text-slate-700 hover:bg-green-100'
+                                                }`}
                                             type="button"
                                         >
                                             <Sliders className="w-4 h-4" /> Filtros
                                         </button>
-                                        {(sheetSearchTerm || Object.keys(sheetFilters).length > 0) && (
+                                        {(sheetSearchTerm || Object.keys(sheetFilters).length > 0 || Object.keys(sheetTextFilters).some((key) => String(sheetTextFilters[key] || '').trim() !== '')) && (
                                             <button
-                                                onClick={() => { setSheetSearchTerm(''); setSheetFilters({}); }}
+                                                onClick={() => { setSheetSearchTerm(''); setSheetFilters({}); setSheetTextFilters({}); }}
                                                 className="px-3 py-1.5 bg-red-100 text-red-700 rounded-lg text-sm font-medium hover:bg-red-200 transition-all"
                                                 type="button"
                                             >
@@ -1739,11 +1809,11 @@ export default function App() {
                                     </div>
 
                                     {sheetShowFiltersPanel && (
-                                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 pt-3 border-t border-green-200">
+                                        <div id="tour-sheets-dynamic-filters" className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 pt-3 border-t border-green-200">
                                             {sheetsColumns.map((column) => {
                                                 const uniqueValues = sheetColumnOptions[column] || [];
                                                 return (
-                                                    <div key={column}>
+                                                    <div key={column} className="bg-white rounded-lg border border-green-200 p-2">
                                                         <label className="text-xs font-bold text-slate-600 mb-1 block">{column}</label>
                                                         <select
                                                             value={sheetFilters[column] || 'TODOS'}
@@ -1769,6 +1839,13 @@ export default function App() {
                                                                 ))}
                                                             </optgroup>
                                                         </select>
+                                                        <input
+                                                            type="text"
+                                                            value={sheetTextFilters[column] || ''}
+                                                            onChange={(e) => setSheetTextFilters((prev) => ({ ...prev, [column]: e.target.value }))}
+                                                            placeholder="Contém..."
+                                                            className="mt-2 w-full px-2 py-1 border border-slate-300 rounded text-xs bg-white focus:ring-1 focus:ring-green-500"
+                                                        />
                                                     </div>
                                                 );
                                             })}
@@ -1802,35 +1879,35 @@ export default function App() {
                                                     </td>
                                                 </tr>
                                             ) : (
-                                                sheetPagedData.map((row, i) => (
-                                                <tr key={row._id} className={`hover:bg-blue-50/50 transition-colors anim-cascade ${row._isInvalid ? 'bg-red-50' : ''}`} style={{ animationDelay: `${i * 15}ms` }}>
-                                                    {sheetsColumns.map((column, index) => {
-                                                        const isLast = index === sheetsColumns.length - 1;
-                                                        const isCandidateBlock = ['Candidato', 'Contato Candidato'].includes(column);
-                                                        const isStatus = normalizeCredentialText(column) === 'status';
-                                                        const isRequiredName = normalizeCredentialText(column) === normalizeCredentialText('Nome Subs');
-                                                        const rawValue = row[column];
-                                                        const value = rawValue === undefined || rawValue === null ? '' : String(rawValue);
+                                                sheetPagedData.map((row) => (
+                                                    <tr key={row._id} className={`hover:bg-blue-50/50 transition-colors ${row._isInvalid ? 'bg-red-50' : ''}`}>
+                                                        {sheetsColumns.map((column, index) => {
+                                                            const isLast = index === sheetsColumns.length - 1;
+                                                            const isCandidateBlock = ['Candidato', 'Contato Candidato'].includes(column);
+                                                            const isStatus = normalizeCredentialText(column) === 'status';
+                                                            const isRequiredName = normalizeCredentialText(column) === normalizeCredentialText('Nome Subs');
+                                                            const rawValue = row[column];
+                                                            const value = rawValue === undefined || rawValue === null ? '' : String(rawValue);
 
-                                                        return (
-                                                            <td key={`${row._id}-${column}`} className={`${isLast ? '' : 'border-r'} p-0 ${isCandidateBlock ? 'bg-green-50/30' : ''} ${row._isInvalid && isRequiredName && !value.trim() ? 'ring-2 ring-inset ring-red-500 bg-red-50' : ''}`}>
-                                                                {isStatus ? (
-                                                                    <select value={value} onChange={(e) => handleInlineEdit(row._id, column, e.target.value)} className="w-full h-full px-3 py-2 appearance-none cursor-pointer focus:bg-blue-100 bg-transparent transition-colors">
-                                                                        <option value="ABERTA">ABERTA</option><option value="FECHADA">FECHADA</option><option value="ENCAMINHADA">ENCAMINHADA</option><option value="CANCELADA">CANCELADA</option><option value="PAUSADA">PAUSADA</option>
-                                                                    </select>
-                                                                ) : (
-                                                                    <input
-                                                                        type="text"
-                                                                        value={value}
-                                                                        onChange={(e) => handleInlineEdit(row._id, column, e.target.value)}
-                                                                        className={`w-full h-full px-3 py-2 bg-transparent transition-colors ${isCandidateBlock ? 'focus:bg-green-100' : 'focus:bg-blue-100'} ${normalizeCredentialText(column) === normalizeCredentialText('OBS:') ? 'text-xs' : ''} ${normalizeCredentialText(column) === normalizeCredentialText('Candidato') ? 'font-bold text-green-900 placeholder:text-green-300' : ''} ${row._isInvalid && isRequiredName ? 'placeholder:text-red-300' : ''}`}
-                                                                        placeholder={row._isInvalid && isRequiredName ? 'Obrigatorio' : ''}
-                                                                    />
-                                                                )}
-                                                            </td>
-                                                        );
-                                                    })}
-                                                </tr>
+                                                            return (
+                                                                <td key={`${row._id}-${column}`} className={`${isLast ? '' : 'border-r'} p-0 ${isCandidateBlock ? 'bg-green-50/30' : ''} ${row._isInvalid && isRequiredName && !value.trim() ? 'ring-2 ring-inset ring-red-500 bg-red-50' : ''}`}>
+                                                                    {isStatus ? (
+                                                                        <select value={value} onChange={(e) => handleInlineEdit(row._id, column, e.target.value)} className="w-full h-full px-3 py-2 appearance-none cursor-pointer focus:bg-blue-100 bg-transparent transition-colors">
+                                                                            <option value="ABERTA">ABERTA</option><option value="FECHADA">FECHADA</option><option value="ENCAMINHADA">ENCAMINHADA</option><option value="CANCELADA">CANCELADA</option><option value="PAUSADA">PAUSADA</option>
+                                                                        </select>
+                                                                    ) : (
+                                                                        <input
+                                                                            type="text"
+                                                                            value={value}
+                                                                            onChange={(e) => handleInlineEdit(row._id, column, e.target.value)}
+                                                                            className={`w-full h-full px-3 py-2 bg-transparent transition-colors ${isCandidateBlock ? 'focus:bg-green-100' : 'focus:bg-blue-100'} ${normalizeCredentialText(column) === normalizeCredentialText('OBS:') ? 'text-xs' : ''} ${normalizeCredentialText(column) === normalizeCredentialText('Candidato') ? 'font-bold text-green-900 placeholder:text-green-300' : ''} ${row._isInvalid && isRequiredName ? 'placeholder:text-red-300' : ''}`}
+                                                                            placeholder={row._isInvalid && isRequiredName ? 'Obrigatorio' : ''}
+                                                                        />
+                                                                    )}
+                                                                </td>
+                                                            );
+                                                        })}
+                                                    </tr>
                                                 ))
                                             )}
                                         </tbody>
@@ -1892,15 +1969,107 @@ export default function App() {
                 </div>
             )}
 
+            {isQuickAddModalOpen && (
+                <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[80] flex items-center justify-center p-4 animate-in fade-in duration-200">
+                    <div id="tour-quick-add-modal" className="bg-white rounded-3xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-300">
+                        <div className="px-8 py-5 border-b flex items-center justify-between bg-white">
+                            <h3 className="text-xl font-bold text-slate-800 flex gap-2 items-center"><PlusCircle className="w-6 h-6 text-emerald-600" /> Novo Cadastro Rápido</h3>
+                            <button onClick={() => setIsQuickAddModalOpen(false)} className="p-2 text-slate-400 hover:bg-slate-100 rounded-xl transition-colors" type="button"><X className="w-5 h-5" /></button>
+                        </div>
+
+                        <div className="p-8 overflow-y-auto flex-1 bg-slate-50">
+                            <div className="mb-4 flex items-center justify-between gap-3">
+                                <p className="text-sm text-slate-600">Preencha rápido os campos principais. Se precisar, expanda para todos os campos.</p>
+                                <button onClick={() => setQuickAddShowAllFields((prev) => !prev)} className="px-3 py-2 rounded-lg border border-slate-300 bg-white text-xs font-semibold hover:bg-slate-100" type="button">
+                                    {quickAddShowAllFields ? 'Mostrar apenas principais' : 'Mostrar todos os campos'}
+                                </button>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                                {quickAddPrimaryColumns.map((column) => {
+                                    const isStatus = normalizeCredentialText(column) === 'status';
+                                    const value = quickAddData[column] === undefined || quickAddData[column] === null ? '' : String(quickAddData[column]);
+
+                                    return (
+                                        <div key={`new-primary-${column}`} className="space-y-1.5">
+                                            <label className="text-xs font-bold text-slate-500 uppercase">{column}</label>
+                                            {isStatus ? (
+                                                <select value={value || 'ABERTA'} onChange={(e) => setQuickAddData((prev) => ({ ...prev, [column]: e.target.value }))} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-emerald-500 bg-white">
+                                                    <option value="ABERTA">ABERTA</option><option value="FECHADA">FECHADA</option><option value="ENCAMINHADA">ENCAMINHADA</option><option value="CANCELADA">CANCELADA</option><option value="PAUSADA">PAUSADA</option>
+                                                </select>
+                                            ) : (
+                                                <input type="text" value={value} onChange={(e) => setQuickAddData((prev) => ({ ...prev, [column]: e.target.value }))} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-emerald-500 bg-white" />
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+
+                            {quickAddShowAllFields && quickAddExtraColumns.length > 0 && (
+                                <div className="mt-6 pt-5 border-t border-slate-200">
+                                    <h4 className="text-sm font-bold text-slate-700 mb-3">Campos adicionais</h4>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                                        {quickAddExtraColumns.map((column) => {
+                                            const value = quickAddData[column] === undefined || quickAddData[column] === null ? '' : String(quickAddData[column]);
+                                            return (
+                                                <div key={`new-extra-${column}`} className="space-y-1.5">
+                                                    <label className="text-xs font-bold text-slate-500 uppercase">{column}</label>
+                                                    <input type="text" value={value} onChange={(e) => setQuickAddData((prev) => ({ ...prev, [column]: e.target.value }))} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-emerald-500 bg-white" />
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+
+                        <div className="px-8 py-4 border-t bg-white flex justify-end gap-3">
+                            <button onClick={() => setIsQuickAddModalOpen(false)} className="px-5 py-2 text-slate-500 font-bold hover:bg-slate-100 rounded-xl transition-colors" type="button">Cancelar</button>
+                            <button onClick={handleQuickAddSave} className="px-6 py-2 bg-emerald-600 text-white font-bold rounded-xl hover:bg-emerald-700 shadow-md active:scale-95 transition-all" type="button">Salvar Cadastro</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {selectedRecord && (
                 <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-[90] animate-in fade-in duration-200">
                     <div id="tour-record-modal" className="bg-white rounded-3xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-300">
                         <div className="px-8 py-5 border-b flex justify-between bg-white items-center"><h3 className="text-xl font-bold text-slate-800 flex gap-2 items-center"><Briefcase className="w-6 h-6 text-indigo-600" />{isEditing ? 'Configurando Matriz' : 'Ficha Completa'}</h3><div className="flex gap-2 items-center">{!isEditing ? <button id="tour-record-edit-btn" onClick={handleEditClick} className="flex items-center gap-1.5 px-4 py-2 bg-indigo-50 text-indigo-700 font-bold rounded-xl text-sm hover:bg-indigo-100 transition-colors" type="button"><Edit2 className="w-4 h-4" /> Editar Todos os Campos</button> : <button id="tour-record-save-btn" onClick={handleSaveEdit} className="flex items-center gap-1.5 px-5 py-2 bg-green-600 text-white font-bold rounded-xl text-sm hover:bg-green-700 shadow-md transition-all active:scale-95" type="button"><Save className="w-4 h-4" /> Salvar Edicoes</button>}<button onClick={() => setSelectedRecord(null)} className="p-2 text-slate-400 hover:bg-slate-100 rounded-xl ml-2 transition-colors" type="button"><X className="w-5 h-5" /></button></div></div>
                         <div className="p-8 overflow-y-auto flex-1 bg-slate-50 relative">
                             {!isEditing ? (
-                                <div className="space-y-6"><div className="grid grid-cols-1 md:grid-cols-2 gap-8"><div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-4"><h4 className="text-xs font-bold text-slate-400 uppercase border-b pb-2">Profissional</h4><p className="text-sm"><b>Nome:</b> {selectedRecord['Nome Subs'] || 'Nao informado'}</p><p className="text-sm"><b>Cargo:</b> {selectedRecord.CARGO || 'Nao informado'}</p><p className="text-sm"><b>Municipio:</b> {selectedRecord['NRE / MUNICIPIO'] || 'Nao informado'}</p><p className="text-sm"><b>Prazo:</b> {getPrazoValue(selectedRecord) || 'Sem prazo'}</p></div><div className="bg-indigo-50 p-6 rounded-2xl border border-indigo-100 shadow-sm space-y-4"><h4 className="text-xs font-bold text-slate-400 uppercase border-b border-indigo-200 pb-2">Candidato e Cobertura</h4><p className="text-sm"><b>Status:</b> {selectedRecord.Status || 'Nao informado'}</p><p className="text-sm"><b>Candidato:</b> {selectedRecord.Candidato || 'SEM COBERTURA'}</p><p className="text-sm"><b>Contato:</b> {selectedRecord['Contato Candidato'] || 'Sem contato'}</p><p className="text-sm"><b>Observacoes:</b> {selectedRecord['OBS:'] || 'Sem observacoes'}</p></div></div></div>
+                                <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                                    <h4 className="text-xs font-bold text-slate-400 uppercase border-b pb-2 mb-4">Detalhes Completos</h4>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        {detailedColumns.map((column) => (
+                                            <div key={`view-${column}`} className="text-sm">
+                                                <p className="text-[11px] font-bold uppercase text-slate-500">{column}</p>
+                                                <p className="font-semibold text-slate-800 break-words">{String(selectedRecord?.[column] || 'Nao informado')}</p>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
                             ) : (
-                                <div id="tour-record-edit-fields" className="space-y-6 bg-white p-8 rounded-2xl border shadow-inner"><div className="grid grid-cols-1 md:grid-cols-2 gap-6"><div className="space-y-1.5"><label className="text-xs font-bold text-slate-500 uppercase">Status</label><select value={editFormData.Status || ''} onChange={(e) => setEditFormData({ ...editFormData, Status: e.target.value })} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-indigo-500 bg-slate-50"><option value="ABERTA">ABERTA</option><option value="FECHADA">FECHADA</option><option value="ENCAMINHADA">ENCAMINHADA</option><option value="CANCELADA">CANCELADA</option><option value="PAUSADA">PAUSADA</option></select></div><div className="space-y-1.5"><label className="text-xs font-bold text-slate-500 uppercase">Profissional</label><input type="text" value={editFormData['Nome Subs'] || ''} onChange={(e) => setEditFormData({ ...editFormData, 'Nome Subs': e.target.value })} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-indigo-500 bg-slate-50" /></div><div className="space-y-1.5"><label className="text-xs font-bold text-slate-500 uppercase">Cargo</label><input type="text" value={editFormData.CARGO || ''} onChange={(e) => setEditFormData({ ...editFormData, CARGO: e.target.value })} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-indigo-500 bg-slate-50" /></div><div className="space-y-1.5"><label className="text-xs font-bold text-slate-500 uppercase">Municipio</label><input type="text" value={editFormData['NRE / MUNICIPIO'] || ''} onChange={(e) => setEditFormData({ ...editFormData, 'NRE / MUNICIPIO': e.target.value })} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-indigo-500 bg-slate-50" /></div><div className="space-y-1.5"><label className="text-xs font-bold text-slate-500 uppercase">Candidato</label><input type="text" value={editFormData.Candidato || ''} onChange={(e) => setEditFormData({ ...editFormData, Candidato: e.target.value })} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-indigo-500 bg-slate-50" /></div><div className="space-y-1.5"><label className="text-xs font-bold text-slate-500 uppercase">Contato</label><input type="text" value={editFormData['Contato Candidato'] || ''} onChange={(e) => setEditFormData({ ...editFormData, 'Contato Candidato': e.target.value })} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-indigo-500 bg-slate-50" /></div><div className="space-y-1.5"><label className="text-xs font-bold text-slate-500 uppercase">Prazo</label><input type="text" value={editFormData[editPrazoFieldKey] || ''} onChange={(e) => setEditFormData({ ...editFormData, [editPrazoFieldKey]: e.target.value })} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-indigo-500 bg-slate-50" /></div><div className="space-y-1.5 md:col-span-2"><label className="text-xs font-bold text-slate-500 uppercase">Observacoes</label><input type="text" value={editFormData['OBS:'] || ''} onChange={(e) => setEditFormData({ ...editFormData, 'OBS:': e.target.value })} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-indigo-500 bg-slate-50" placeholder="Adicionar nota..." /></div></div></div>
+                                <div id="tour-record-edit-fields" className="space-y-6 bg-white p-8 rounded-2xl border shadow-inner">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                        {detailedColumns.map((column) => {
+                                            const isStatus = normalizeCredentialText(column) === 'status';
+                                            const value = editFormData[column] === undefined || editFormData[column] === null ? '' : String(editFormData[column]);
+
+                                            return (
+                                                <div key={`edit-${column}`} className="space-y-1.5">
+                                                    <label className="text-xs font-bold text-slate-500 uppercase">{column}</label>
+                                                    {isStatus ? (
+                                                        <select value={value} onChange={(e) => setEditFormData({ ...editFormData, [column]: e.target.value })} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-indigo-500 bg-slate-50">
+                                                            <option value="ABERTA">ABERTA</option><option value="FECHADA">FECHADA</option><option value="ENCAMINHADA">ENCAMINHADA</option><option value="CANCELADA">CANCELADA</option><option value="PAUSADA">PAUSADA</option>
+                                                        </select>
+                                                    ) : (
+                                                        <input type="text" value={value} onChange={(e) => setEditFormData({ ...editFormData, [column]: e.target.value })} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-indigo-500 bg-slate-50" />
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
                             )}
                         </div>
                     </div>
