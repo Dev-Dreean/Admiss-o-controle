@@ -315,6 +315,7 @@ const DEFAULT_TUTORIAL_PROGRESS = Object.freeze({
     SHEETS: false,
     NEW_FEATURES_TABLE: false,
     NEW_FEATURES_SHEETS: false,
+    NEW_FEATURES_SHEETS_V2: false,
     PATCH_NOTES_VIEWED: false,
 });
 
@@ -324,6 +325,7 @@ const normalizeTutorialProgress = (value) => ({
     SHEETS: Boolean(value?.SHEETS),
     NEW_FEATURES_TABLE: Boolean(value?.NEW_FEATURES_TABLE),
     NEW_FEATURES_SHEETS: Boolean(value?.NEW_FEATURES_SHEETS),
+    NEW_FEATURES_SHEETS_V2: Boolean(value?.NEW_FEATURES_SHEETS_V2),
     PATCH_NOTES_VIEWED: Boolean(value?.PATCH_NOTES_VIEWED),
 });
 
@@ -462,7 +464,7 @@ const TUTORIAL_STEPS = {
             icon: <Edit2 className="w-8 h-8 text-indigo-500" />,
         },
     ],
-    NEW_FEATURES_SHEETS: [
+    NEW_FEATURES_SHEETS_V2: [
         {
             id: 'new-features-dynamic-filters',
             target: 'tour-sheets-dynamic-filters',
@@ -474,8 +476,15 @@ const TUTORIAL_STEPS = {
             id: 'new-features-columns-panel',
             target: 'tour-sheets-columns-panel-btn',
             title: 'Colunas inteligentes',
-            desc: 'No botao Colunas voce escolhe o que aparece na planilha e ajusta o layout para o seu fluxo.',
+            desc: 'No botao Colunas voce abre o painel para escolher o que aparece na planilha e ajustar o layout para o seu fluxo.',
             icon: <TableProperties className="w-8 h-8 text-emerald-600" />,
+        },
+        {
+            id: 'new-features-columns-toggle',
+            target: 'tour-sheets-columns-first-toggle',
+            title: 'Desmarcar e remarcar coluna',
+            desc: 'Clique no checkbox de uma coluna para desmarcar: ela some da planilha. Clique de novo para remarcar: ela volta. Assim voce personaliza do jeito que preferir.',
+            icon: <Check className="w-8 h-8 text-indigo-500" />,
         },
         {
             id: 'new-features-actions-delete',
@@ -1266,12 +1275,12 @@ export default function App() {
     }, [activeTab, data.length, isAuthenticated, accountTutorialProgress, sessionTutorialProgress, showTutorial, showWelcome, showPatchNotes]);
 
     useEffect(() => {
-        if (showWelcome || !isAuthenticated || data.length === 0 || showTutorial || activeTab !== 'SHEETS' || hasCompletedTutorialSection('NEW_FEATURES_SHEETS')) {
+        if (showWelcome || !isAuthenticated || data.length === 0 || showTutorial || activeTab !== 'SHEETS' || hasCompletedTutorialSection('NEW_FEATURES_SHEETS_V2')) {
             return undefined;
         }
 
         const timer = setTimeout(() => {
-            setTutorialSection('NEW_FEATURES_SHEETS');
+            setTutorialSection('NEW_FEATURES_SHEETS_V2');
             setShowTutorial(true);
         }, 350);
 
@@ -1323,7 +1332,7 @@ export default function App() {
         handlePatchNotesClose();
         setTimeout(() => {
             setActiveTab('SHEETS');
-            setTutorialSection('NEW_FEATURES_SHEETS');
+            setTutorialSection('NEW_FEATURES_SHEETS_V2');
             setShowTutorial(true);
         }, 220);
     };
@@ -2005,6 +2014,23 @@ export default function App() {
     }, [showTutorial, tutorialActiveStep, tutorialSection]);
 
     useEffect(() => {
+        if (!showTutorial || tutorialSection !== 'NEW_FEATURES_SHEETS_V2') return;
+
+        const currentStepId = tutorialActiveStep?.id;
+
+        if (currentStepId === 'new-features-columns-panel' || currentStepId === 'new-features-columns-toggle') {
+            setIsSheetColumnsPanelOpen(true);
+        }
+
+        if (currentStepId === 'new-features-actions-delete' || currentStepId === 'new-features-horizontal-scroll') {
+            const scroller = document.getElementById('tour-sheets-horizontal-scroll');
+            if (scroller) {
+                scroller.scrollTo({ left: scroller.scrollWidth, behavior: 'smooth' });
+            }
+        }
+    }, [showTutorial, tutorialActiveStep, tutorialSection]);
+
+    useEffect(() => {
         const onKeyDown = (event) => {
             if (!isAuthenticated) return;
             if (event.ctrlKey || event.metaKey || event.altKey) return;
@@ -2265,10 +2291,10 @@ export default function App() {
                                                         <button onClick={resetSheetColumnsLayout} className="text-xs font-bold text-indigo-600 hover:text-indigo-800" type="button">Resetar layout</button>
                                                     </div>
                                                     <div className="p-3 space-y-1 max-h-[280px] overflow-auto">
-                                                        {sheetsColumns.map((column) => {
+                                                        {sheetsColumns.map((column, index) => {
                                                             const checked = !hiddenSheetColumns.includes(column);
                                                             return (
-                                                                <label key={`sheet-col-toggle-${column}`} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-50 cursor-pointer">
+                                                                <label id={index === 0 ? 'tour-sheets-columns-first-toggle' : undefined} key={`sheet-col-toggle-${column}`} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-50 cursor-pointer">
                                                                     <input
                                                                         type="checkbox"
                                                                         checked={checked}
@@ -2284,6 +2310,18 @@ export default function App() {
                                                 </div>
                                             )}
                                         </div>
+
+                                        <button
+                                            onClick={() => {
+                                                setActiveTab('SHEETS');
+                                                setTutorialSection('NEW_FEATURES_SHEETS_V2');
+                                                setShowTutorial(true);
+                                            }}
+                                            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-bold hover:bg-indigo-700 border border-indigo-600 shadow-sm transition-all"
+                                            type="button"
+                                        >
+                                            <ChevronRight className="w-4 h-4" /> Tutorial Planilha
+                                        </button>
 
                                         <button onClick={openQuickAddModal} className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 shadow-sm hover:shadow-md transition-all" type="button"><PlusCircle className="w-5 h-5" /> Novo Cadastro (C)</button>
                                     </div>
