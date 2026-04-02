@@ -29,6 +29,9 @@ const AUTH_DB_STORAGE_KEY = 'vagas_internal_account_excel_encrypted';
 const AUTH_LEGACY_STORAGE_KEY = 'vagas_internal_account';
 const AUTH_DB_SHEET_NAME = 'USUARIOS';
 const AUTH_DB_SECRET = 'controle-admissoes-auth-db-v1';
+const GRID_PAGE_SIZE = 200;
+const SHEETS_PAGE_SIZE = 120;
+const SHEET_FILTER_OPTIONS_LIMIT = 300;
 
 const encodeBase64 = (arrayBuffer) => {
     const bytes = new Uint8Array(arrayBuffer);
@@ -866,8 +869,7 @@ export default function App() {
     const localData = Array.isArray(localDataRaw) ? localDataRaw : [];
 
     const [history, setHistory] = useState({ past: [], present: localData, future: [] });
-    const [customChartsRaw, setCustomCharts] = useLocalStorage('vagas_custom_charts', []);
-    const customCharts = Array.isArray(customChartsRaw) ? customChartsRaw : [];
+    const [customChartsRaw, setCustomCharts] = useLocalStorage('vagas_custom_charts', {});
 
     const [savedAccountRaw, setLegacySavedAccount] = useLocalStorage(AUTH_LEGACY_STORAGE_KEY, null);
     const [encryptedAccountDb, setEncryptedAccountDb] = useLocalStorage(AUTH_DB_STORAGE_KEY, '');
@@ -893,12 +895,15 @@ export default function App() {
     const [loading, setLoading] = useState(false);
     const [isInitialSyncing, setIsInitialSyncing] = useState(false);
     const [activeTab, setActiveTab] = useState('TABELA');
+    const [gridViewMode, setGridViewMode] = useState('COMPACT');
+    const [gridPage, setGridPage] = useState(1);
     const [searchTerm, setSearchTerm] = useState('');
     const [filters, setFilters] = useState({ status: 'TODOS', municipio: 'TODOS', motivo: 'TODOS', urgencia: 'TODOS' });
     const [showErrorsOnly, setShowErrorsOnly] = useState(false);
     const [sheetSearchTerm, setSheetSearchTerm] = useState('');
     const [sheetFilters, setSheetFilters] = useState({});
     const [sheetShowFiltersPanel, setSheetShowFiltersPanel] = useState(false);
+    const [sheetPage, setSheetPage] = useState(1);
 
     const [selectedRecord, setSelectedRecord] = useState(null);
     const [isEditing, setIsEditing] = useState(false);
@@ -933,6 +938,18 @@ export default function App() {
     };
 
     const data = Array.isArray(history.present) ? history.present : [];
+    const chartsOwnerKey = useMemo(() => normalizeCredentialText(savedAccount?.username || currentUsername || 'global') || 'global', [currentUsername, savedAccount]);
+    const customChartsStore = useMemo(() => {
+        if (Array.isArray(customChartsRaw)) return { global: customChartsRaw };
+        if (customChartsRaw && typeof customChartsRaw === 'object') return customChartsRaw;
+        return {};
+    }, [customChartsRaw]);
+    const customCharts = useMemo(() => {
+        const byUser = customChartsStore[chartsOwnerKey];
+        if (Array.isArray(byUser)) return byUser;
+        if (Array.isArray(customChartsStore.global)) return customChartsStore.global;
+        return [];
+    }, [chartsOwnerKey, customChartsStore]);
     const tutorialSteps = TUTORIAL_STEPS[tutorialSection] || [];
     const hasCompletedTutorialSection = (section) => savedTutorialProgress[section] || sessionTutorialProgress[section];
     const editPrazoFieldKey = useMemo(() => getPrazoKey(editFormData), [editFormData]);
@@ -958,6 +975,17 @@ export default function App() {
             setLegacySavedAccount(null);
         }
     }, [decryptedAccount, legacyAccount, setEncryptedAccountDb, setLegacySavedAccount]);
+
+    useEffect(() => {
+        if (!Array.isArray(customChartsRaw)) return;
+        setCustomCharts((previous) => {
+            if (!Array.isArray(previous)) return previous;
+            return {
+                [chartsOwnerKey]: previous,
+                global: previous,
+            };
+        });
+    }, [chartsOwnerKey, customChartsRaw, setCustomCharts]);
 
     useEffect(() => {
         if (!savedAccount) {
@@ -1233,14 +1261,36 @@ export default function App() {
 
     const addCustomChart = () => {
         if (newChartData.title && newChartData.groupBy) {
-            setCustomCharts([...customCharts, { id: Date.now(), ...newChartData }]);
+            setCustomCharts((previous) => {
+                const currentStore = Array.isArray(previous)
+                    ? { global: previous }
+                    : (previous && typeof previous === 'object' ? previous : {});
+
+                const currentUserCharts = Array.isArray(currentStore[chartsOwnerKey]) ? currentStore[chartsOwnerKey] : [];
+
+                return {
+                    ...currentStore,
+                    [chartsOwnerKey]: [...currentUserCharts, { id: Date.now(), ...newChartData }],
+                };
+            });
             setIsChartModalOpen(false);
             setNewChartData({ title: '', type: 'bar', groupBy: 'CARGO' });
         }
     };
 
     const removeCustomChart = (chartId) => {
-        setCustomCharts((prev) => (Array.isArray(prev) ? prev.filter((chart) => chart.id !== chartId) : []));
+        setCustomCharts((previous) => {
+            const currentStore = Array.isArray(previous)
+                ? { global: previous }
+                : (previous && typeof previous === 'object' ? previous : {});
+
+            const currentUserCharts = Array.isArray(currentStore[chartsOwnerKey]) ? currentStore[chartsOwnerKey] : [];
+
+            return {
+                ...currentStore,
+                [chartsOwnerKey]: currentUserCharts.filter((chart) => chart.id !== chartId),
+            };
+        });
     };
 
     const handleChartClick = (groupBy, value) => {
@@ -1342,6 +1392,26 @@ export default function App() {
         return [...prioritized, ...others];
     }, [filteredData]);
 
+    const sheetColumnOptions = useMemo(() => {
+        const optionsByColumn = {};
+
+        sheetsColumns.forEach((column) => {
+            const uniqueValues = new Set();
+
+            for (let i = 0; i < filteredData.length; i += 1) {
+                const raw = filteredData[i]?.[column];
+                const normalized = String(raw || '').trim();
+                if (!normalized) continue;
+                uniqueValues.add(normalized);
+                if (uniqueValues.size >= SHEET_FILTER_OPTIONS_LIMIT) break;
+            }
+
+            optionsByColumn[column] = Array.from(uniqueValues).sort((a, b) => a.localeCompare(b));
+        });
+
+        return optionsByColumn;
+    }, [filteredData, sheetsColumns]);
+
     const sheetFilteredData = useMemo(() => {
         let result = filteredData;
 
@@ -1368,6 +1438,36 @@ export default function App() {
 
         return result;
     }, [filteredData, sheetSearchTerm, sheetFilters]);
+
+    const gridTotalPages = useMemo(() => Math.max(1, Math.ceil(filteredData.length / GRID_PAGE_SIZE)), [filteredData.length]);
+    const gridPagedData = useMemo(() => {
+        const safePage = Math.min(gridPage, gridTotalPages);
+        const start = (safePage - 1) * GRID_PAGE_SIZE;
+        return filteredData.slice(start, start + GRID_PAGE_SIZE);
+    }, [filteredData, gridPage, gridTotalPages]);
+
+    const sheetTotalPages = useMemo(() => Math.max(1, Math.ceil(sheetFilteredData.length / SHEETS_PAGE_SIZE)), [sheetFilteredData.length]);
+    const sheetPagedData = useMemo(() => {
+        const safePage = Math.min(sheetPage, sheetTotalPages);
+        const start = (safePage - 1) * SHEETS_PAGE_SIZE;
+        return sheetFilteredData.slice(start, start + SHEETS_PAGE_SIZE);
+    }, [sheetFilteredData, sheetPage, sheetTotalPages]);
+
+    useEffect(() => {
+        setGridPage(1);
+    }, [searchTerm, filters, showErrorsOnly]);
+
+    useEffect(() => {
+        setSheetPage(1);
+    }, [sheetSearchTerm, sheetFilters]);
+
+    useEffect(() => {
+        if (gridPage > gridTotalPages) setGridPage(gridTotalPages);
+    }, [gridPage, gridTotalPages]);
+
+    useEffect(() => {
+        if (sheetPage > sheetTotalPages) setSheetPage(sheetTotalPages);
+    }, [sheetPage, sheetTotalPages]);
 
     useEffect(() => {
         if (!showTutorial || tutorialSection !== 'TABELA') return;
@@ -1484,6 +1584,28 @@ export default function App() {
                                         <div id="tour-record-count" className="text-xs font-bold text-indigo-600 bg-white px-2 py-1 rounded-md shadow-sm transition-all">Exibindo {filteredData.length} registros</div>
                                     </div>
 
+                                    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                                        <div className="inline-flex rounded-lg border border-slate-300 bg-white p-1 shadow-sm">
+                                            <button
+                                                onClick={() => setGridViewMode('COMPACT')}
+                                                className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all ${gridViewMode === 'COMPACT' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+                                                type="button"
+                                            >
+                                                Grid Enxuto
+                                            </button>
+                                            <button
+                                                onClick={() => setGridViewMode('COMPLETE')}
+                                                className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all ${gridViewMode === 'COMPLETE' ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+                                                type="button"
+                                            >
+                                                Grid Completo
+                                            </button>
+                                        </div>
+                                        <div className="text-xs text-slate-600 font-semibold">
+                                            Pagina {gridPage} de {gridTotalPages}
+                                        </div>
+                                    </div>
+
                                     <div id="tour-filters-controls" className="grid grid-cols-1 md:grid-cols-5 gap-3">
                                         <div id="tour-search" className="relative group"><Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 group-focus-within:text-indigo-500 transition-colors" /><input type="text" placeholder="Buscar..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="pl-9 pr-4 py-2.5 border border-slate-300 rounded-lg text-sm w-full focus:ring-2 focus:ring-indigo-500 transition-all" /></div>
                                         <select id="tour-status-filter" value={filters.status} onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))} className="px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 bg-white font-medium transition-all"><option value="TODOS">Todos os Status</option>{listOptions.status.map((s) => <option key={s} value={s}>{s}</option>)}</select>
@@ -1500,37 +1622,63 @@ export default function App() {
                                 <div className="overflow-x-auto relative flex-1 min-h-[400px]">
                                     <table className="w-full text-left text-sm whitespace-nowrap">
                                         <thead id="tour-table-head" className="bg-slate-800 border-b border-slate-700 text-slate-200 font-semibold text-xs uppercase tracking-wider sticky top-0 z-10">
-                                            <tr><th id="tour-table-col-status" className="px-6 py-4">Status Rapido</th><th id="tour-table-col-vaga" className="px-6 py-4">Vaga</th><th id="tour-table-col-candidato" className="px-6 py-4">Candidato</th><th id="tour-table-col-prazo" className="px-6 py-4">Prazo</th><th id="tour-table-col-ficha" className="px-6 py-4 text-right">Ficha</th></tr>
+                                            {gridViewMode === 'COMPACT' ? (
+                                                <tr><th id="tour-table-col-status" className="px-6 py-4">Status Rapido</th><th id="tour-table-col-vaga" className="px-6 py-4">Vaga</th><th id="tour-table-col-candidato" className="px-6 py-4">Candidato</th><th id="tour-table-col-prazo" className="px-6 py-4">Prazo</th><th id="tour-table-col-ficha" className="px-6 py-4 text-right">Ficha</th></tr>
+                                            ) : (
+                                                <tr>
+                                                    {sheetsColumns.map((column) => (
+                                                        <th key={`grid-full-${column}`} className="px-4 py-3 border-r border-slate-700">{column}</th>
+                                                    ))}
+                                                    <th id="tour-table-col-ficha" className="px-6 py-4 text-right">Ficha</th>
+                                                </tr>
+                                            )}
                                         </thead>
                                         <tbody id="tour-table" key={tableAnimationKey} className="divide-y divide-slate-200/50">
-                                            {filteredData.slice(0, 200).map((row, index) => {
+                                            {gridPagedData.map((row, index) => {
                                                 const status = safeGet(row, 'Status');
                                                 const candidato = row.Candidato || 'SEM COBERTURA';
                                                 const prazoValue = getPrazoValue(row);
                                                 const diasParaInicio = getDaysDiff(prazoValue);
                                                 return (
                                                     <tr key={row._id} className={`${getRowThermalClass(diasParaInicio, status, candidato, row._isInvalid)} group anim-cascade transition-all duration-300 hover:shadow-sm`} style={{ animationDelay: `${index * 15}ms` }}>
-                                                        <td className="px-6 py-4 relative">
-                                                            {row._isInvalid && <AlertCircle className="absolute left-1 top-1/2 -translate-y-1/2 w-4 h-4 text-red-600 animate-pulse" />}
-                                                            <select value={status} onChange={(e) => handleInlineEdit(row._id, 'Status', e.target.value)} className={`appearance-none w-32 ml-2 px-2 py-1.5 rounded-lg text-xs font-bold cursor-pointer focus:ring-2 focus:ring-indigo-500 shadow-sm transition-all ${STATUS_COLORS[status] || 'bg-slate-100 text-slate-800 border-slate-200'}`}>
-                                                                <option value="ABERTA">ABERTA</option><option value="FECHADA">FECHADA</option><option value="ENCAMINHADA">ENCAMINHADA</option><option value="CANCELADA">CANCELADA</option><option value="PAUSADA">PAUSADA</option>
-                                                            </select>
-                                                        </td>
-                                                        <td className="px-6 py-4"><div className={`font-bold ${row._isInvalid ? 'text-red-700' : 'text-slate-900'}`}>{row['Nome Subs'] || 'FALTANDO'}</div><div className="text-slate-600 text-xs mt-0.5">{row.CARGO} • {row['NRE / MUNICIPIO']}</div></td>
-                                                        <td className="px-6 py-4"><div className={`font-bold ${candidato === 'SEM COBERTURA' ? 'text-red-700' : 'text-slate-800'}`}>{candidato}</div><div className="text-slate-500 text-xs mt-0.5">{row['Contato Candidato'] || 'Sem contato'}</div></td>
-                                                        <td className="px-6 py-4"><div className="font-bold text-slate-800">{prazoValue || 'Sem prazo'}</div>
-                                                            {diasParaInicio !== null && !['FECHADA', 'ENCAMINHADA', 'CANCELADA'].includes(status) && candidato === 'SEM COBERTURA' && (
-                                                                <div className={`text-xs mt-1 font-bold inline-block px-2 py-0.5 rounded shadow-sm transition-transform group-hover:scale-105 ${diasParaInicio < 0 ? 'bg-red-600 text-white' : diasParaInicio === 0 ? 'bg-red-500 text-white' : diasParaInicio <= 5 ? 'bg-orange-500 text-white' : diasParaInicio <= 15 ? 'bg-yellow-400 text-yellow-900' : diasParaInicio <= 30 ? 'bg-lime-500 text-lime-900' : 'bg-green-500 text-white'}`}>
-                                                                    {diasParaInicio < 0 ? `Atrasado ${Math.abs(diasParaInicio)}d` : diasParaInicio === 0 ? 'E Hoje!' : `Faltam ${diasParaInicio}d`}
-                                                                </div>
-                                                            )}
-                                                        </td>
+                                                        {gridViewMode === 'COMPACT' ? (
+                                                            <>
+                                                                <td className="px-6 py-4 relative">
+                                                                    {row._isInvalid && <AlertCircle className="absolute left-1 top-1/2 -translate-y-1/2 w-4 h-4 text-red-600 animate-pulse" />}
+                                                                    <select value={status} onChange={(e) => handleInlineEdit(row._id, 'Status', e.target.value)} className={`appearance-none w-32 ml-2 px-2 py-1.5 rounded-lg text-xs font-bold cursor-pointer focus:ring-2 focus:ring-indigo-500 shadow-sm transition-all ${STATUS_COLORS[status] || 'bg-slate-100 text-slate-800 border-slate-200'}`}>
+                                                                        <option value="ABERTA">ABERTA</option><option value="FECHADA">FECHADA</option><option value="ENCAMINHADA">ENCAMINHADA</option><option value="CANCELADA">CANCELADA</option><option value="PAUSADA">PAUSADA</option>
+                                                                    </select>
+                                                                </td>
+                                                                <td className="px-6 py-4"><div className={`font-bold ${row._isInvalid ? 'text-red-700' : 'text-slate-900'}`}>{row['Nome Subs'] || 'FALTANDO'}</div><div className="text-slate-600 text-xs mt-0.5">{row.CARGO} • {row['NRE / MUNICIPIO']}</div></td>
+                                                                <td className="px-6 py-4"><div className={`font-bold ${candidato === 'SEM COBERTURA' ? 'text-red-700' : 'text-slate-800'}`}>{candidato}</div><div className="text-slate-500 text-xs mt-0.5">{row['Contato Candidato'] || 'Sem contato'}</div></td>
+                                                                <td className="px-6 py-4"><div className="font-bold text-slate-800">{prazoValue || 'Sem prazo'}</div>
+                                                                    {diasParaInicio !== null && !['FECHADA', 'ENCAMINHADA', 'CANCELADA'].includes(status) && candidato === 'SEM COBERTURA' && (
+                                                                        <div className={`text-xs mt-1 font-bold inline-block px-2 py-0.5 rounded shadow-sm transition-transform group-hover:scale-105 ${diasParaInicio < 0 ? 'bg-red-600 text-white' : diasParaInicio === 0 ? 'bg-red-500 text-white' : diasParaInicio <= 5 ? 'bg-orange-500 text-white' : diasParaInicio <= 15 ? 'bg-yellow-400 text-yellow-900' : diasParaInicio <= 30 ? 'bg-lime-500 text-lime-900' : 'bg-green-500 text-white'}`}>
+                                                                            {diasParaInicio < 0 ? `Atrasado ${Math.abs(diasParaInicio)}d` : diasParaInicio === 0 ? 'E Hoje!' : `Faltam ${diasParaInicio}d`}
+                                                                        </div>
+                                                                    )}
+                                                                </td>
+                                                            </>
+                                                        ) : (
+                                                            sheetsColumns.map((column) => (
+                                                                <td key={`grid-full-cell-${row._id}-${column}`} className="px-4 py-3 border-r border-slate-200 text-slate-700 max-w-[260px] truncate">
+                                                                    {String(row[column] || '-')}
+                                                                </td>
+                                                            ))
+                                                        )}
                                                         <td className="px-6 py-4 text-right"><button id={index === 0 ? 'tour-record-open-btn' : undefined} onClick={() => { setSelectedRecord(row); setIsEditing(false); }} className="p-2.5 bg-white hover:bg-indigo-50 rounded-lg shadow-sm border border-slate-200 transition-all hover:border-indigo-300 hover:shadow-md active:scale-95" type="button"><Edit2 className="w-4 h-4 text-slate-600 hover:text-indigo-700" /></button></td>
                                                     </tr>
                                                 );
                                             })}
                                         </tbody>
                                     </table>
+                                </div>
+                                <div className="px-5 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
+                                    <div className="text-xs font-semibold text-slate-600">Mostrando {gridPagedData.length} itens nesta pagina</div>
+                                    <div className="inline-flex items-center gap-2">
+                                        <button onClick={() => setGridPage((p) => Math.max(1, p - 1))} disabled={gridPage <= 1} className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-sm font-semibold disabled:opacity-40" type="button">Anterior</button>
+                                        <button onClick={() => setGridPage((p) => Math.min(gridTotalPages, p + 1))} disabled={gridPage >= gridTotalPages} className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-sm font-semibold disabled:opacity-40" type="button">Proxima</button>
+                                    </div>
                                 </div>
                             </div>
                         )}
@@ -1593,10 +1741,7 @@ export default function App() {
                                     {sheetShowFiltersPanel && (
                                         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 pt-3 border-t border-green-200">
                                             {sheetsColumns.map((column) => {
-                                                const uniqueValues = Array.from(new Set(
-                                                    filteredData.map(row => String(row[column] || '').trim()).filter(Boolean)
-                                                )).sort();
-
+                                                const uniqueValues = sheetColumnOptions[column] || [];
                                                 return (
                                                     <div key={column}>
                                                         <label className="text-xs font-bold text-slate-600 mb-1 block">{column}</label>
@@ -1657,7 +1802,7 @@ export default function App() {
                                                     </td>
                                                 </tr>
                                             ) : (
-                                                sheetFilteredData.map((row, i) => (
+                                                sheetPagedData.map((row, i) => (
                                                 <tr key={row._id} className={`hover:bg-blue-50/50 transition-colors anim-cascade ${row._isInvalid ? 'bg-red-50' : ''}`} style={{ animationDelay: `${i * 15}ms` }}>
                                                     {sheetsColumns.map((column, index) => {
                                                         const isLast = index === sheetsColumns.length - 1;
@@ -1690,6 +1835,13 @@ export default function App() {
                                             )}
                                         </tbody>
                                     </table>
+                                </div>
+                                <div className="px-4 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
+                                    <div className="text-xs font-semibold text-slate-600">Pagina {sheetPage} de {sheetTotalPages} • {sheetPagedData.length} linhas visiveis</div>
+                                    <div className="inline-flex items-center gap-2">
+                                        <button onClick={() => setSheetPage((p) => Math.max(1, p - 1))} disabled={sheetPage <= 1} className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-sm font-semibold disabled:opacity-40" type="button">Anterior</button>
+                                        <button onClick={() => setSheetPage((p) => Math.min(sheetTotalPages, p + 1))} disabled={sheetPage >= sheetTotalPages} className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-sm font-semibold disabled:opacity-40" type="button">Proxima</button>
+                                    </div>
                                 </div>
                             </div>
                         )}
