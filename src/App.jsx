@@ -4,11 +4,13 @@ import {
     X, ChevronRight, Briefcase, Download, Edit2, Save,
     LayoutDashboard, ListTodo, TableProperties, PlusCircle,
     BarChart2, PieChart as PieChartIcon, Trash2,
-    Undo2, Redo2, Check, ChevronLeft, Map
+    Undo2, Redo2, Check, ChevronLeft, Map, LogOut
 } from 'lucide-react';
 import {
     PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer
 } from 'recharts';
+import CryptoJS from 'crypto-js';
+import * as XLSX from 'xlsx';
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f43f5e', '#84cc16'];
 const STATUS_COLORS = {
@@ -21,6 +23,73 @@ const STATUS_COLORS = {
 
 const GOOGLE_SHEETS_URL = 'https://docs.google.com/spreadsheets/d/1hmLkIX2B4rh6NDtJUXOhtjdXhddozqPs9uMTzaTeBsk/edit?usp=sharing';
 const GOOGLE_SHEETS_CSV_EXPORT = 'https://docs.google.com/spreadsheets/d/1hmLkIX2B4rh6NDtJUXOhtjdXhddozqPs9uMTzaTeBsk/export?format=csv';
+const AUTH_ACCESS_KEY = 'Plansul@2025';
+const AUTH_SESSION_DURATION_MS = 60 * 60 * 1000;
+const AUTH_DB_STORAGE_KEY = 'vagas_internal_account_excel_encrypted';
+const AUTH_LEGACY_STORAGE_KEY = 'vagas_internal_account';
+const AUTH_DB_SHEET_NAME = 'USUARIOS';
+const AUTH_DB_SECRET = 'controle-admissoes-auth-db-v1';
+
+const encodeBase64 = (arrayBuffer) => {
+    const bytes = new Uint8Array(arrayBuffer);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+    return window.btoa(binary);
+};
+
+const decodeBase64 = (base64) => {
+    const binary = window.atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return bytes;
+};
+
+const createEncryptedExcelAuthDb = (account) => {
+    if (!hasStoredAccount(account)) return '';
+
+    const row = {
+        Usuario: String(account.username || '').trim(),
+        Senha: String(account.password || ''),
+        CriadoEm: String(account.createdAt || ''),
+        AtualizadoEm: String(account.updatedAt || ''),
+    };
+
+    const workbook = XLSX.utils.book_new();
+    const worksheet = XLSX.utils.json_to_sheet([row]);
+    XLSX.utils.book_append_sheet(workbook, worksheet, AUTH_DB_SHEET_NAME);
+    const workbookBytes = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
+    const workbookBase64 = encodeBase64(workbookBytes);
+    return CryptoJS.AES.encrypt(workbookBase64, AUTH_DB_SECRET).toString();
+};
+
+const readEncryptedExcelAuthDb = (encryptedValue) => {
+    if (!encryptedValue || typeof encryptedValue !== 'string') return null;
+
+    try {
+        const decrypted = CryptoJS.AES.decrypt(encryptedValue, AUTH_DB_SECRET).toString(CryptoJS.enc.Utf8);
+        if (!decrypted) return null;
+
+        const workbookBytes = decodeBase64(decrypted);
+        const workbook = XLSX.read(workbookBytes, { type: 'array' });
+        const sheetName = workbook.SheetNames[0];
+        if (!sheetName) return null;
+
+        const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], { defval: '', raw: false });
+        if (!Array.isArray(rows) || rows.length === 0) return null;
+
+        const latestRow = rows[0] || {};
+        const account = {
+            username: String(latestRow.Usuario || '').trim(),
+            password: String(latestRow.Senha || ''),
+            createdAt: String(latestRow.CriadoEm || ''),
+            updatedAt: String(latestRow.AtualizadoEm || ''),
+        };
+
+        return hasStoredAccount(account) ? account : null;
+    } catch (error) {
+        return null;
+    }
+};
 
 const safeGet = (obj, key) => String(obj[key] || '').trim().toUpperCase();
 
@@ -147,6 +216,72 @@ const matchesSavedUsername = (inputValue, savedUsername) => {
     return normalizedInput === normalizeCredentialText(getFirstName(savedUsername));
 };
 
+const getAuthSessionExpiryTimestamp = (session) => {
+    const startedAt = Date.parse(String(session?.at || ''));
+    if (Number.isNaN(startedAt)) return null;
+    return startedAt + AUTH_SESSION_DURATION_MS;
+};
+
+const hasActiveAuthSession = (session, account) => {
+    if (!account || !session?.authenticated || !matchesSavedUsername(session.username, account.username)) return false;
+    const expiryTimestamp = getAuthSessionExpiryTimestamp(session);
+    return Boolean(expiryTimestamp && expiryTimestamp > Date.now());
+};
+
+const hasStoredAccount = (account) => Boolean(
+    account
+    && typeof account === 'object'
+    && String(account.username || '').trim()
+    && String(account.password || '').trim(),
+);
+
+const PRAZO_KEYS = [
+    'Prazo',
+    'Inicio Situacao',
+    'Inicio Situação',
+    'Início Situação',
+    'Data Prazo',
+    'Data de Prazo',
+    'Data Inicio',
+];
+
+const getRowValue = (row, possibleKeys) => {
+    if (!row || typeof row !== 'object') return '';
+
+    for (const key of possibleKeys) {
+        const directValue = row[key];
+        if (directValue !== undefined && String(directValue).trim() !== '') return directValue;
+    }
+
+    const normalizedKeys = new Set(possibleKeys.map((key) => normalizeCredentialText(key)));
+    for (const [rowKey, rowValue] of Object.entries(row)) {
+        if (normalizedKeys.has(normalizeCredentialText(rowKey)) && String(rowValue).trim() !== '') {
+            return rowValue;
+        }
+    }
+
+    return '';
+};
+
+const getRowKey = (row, possibleKeys) => {
+    if (!row || typeof row !== 'object') return possibleKeys[0] || '';
+
+    for (const key of possibleKeys) {
+        if (Object.prototype.hasOwnProperty.call(row, key)) return key;
+    }
+
+    const normalizedKeys = new Set(possibleKeys.map((key) => normalizeCredentialText(key)));
+    for (const rowKey of Object.keys(row)) {
+        if (normalizedKeys.has(normalizeCredentialText(rowKey))) return rowKey;
+    }
+
+    return possibleKeys[0] || '';
+};
+
+const getPrazoValue = (row) => getRowValue(row, PRAZO_KEYS);
+const getPrazoKey = (row) => getRowKey(row, PRAZO_KEYS);
+const SHEETS_PRIORITY_COLUMNS = ['Status', 'Nome Subs', 'CARGO', 'Candidato', 'Contato Candidato', 'NRE / MUNICIPIO', 'Motivo', 'OBS:'];
+
 const DEFAULT_TUTORIAL_PROGRESS = Object.freeze({
     TABELA: false,
     DASHBOARD: false,
@@ -162,95 +297,127 @@ const normalizeTutorialProgress = (value) => ({
 const TUTORIAL_STEPS = {
     TABELA: [
         {
+            id: 'table-navigation',
             target: 'tour-tabs',
-            title: 'Menu principal',
-            desc: 'Use estes botoes para trocar entre a tabela, os graficos e a planilha.',
+            title: 'Navegacao',
+            desc: 'Aqui voce troca entre a tabela, os graficos e a planilha, sempre seguindo o fluxo principal do sistema.',
             icon: <LayoutDashboard className="w-8 h-8 text-indigo-500" />,
         },
         {
-            target: 'tour-search',
-            title: 'Busca',
-            desc: 'Digite qualquer nome, cargo ou municipio para achar mais rapido o que voce precisa.',
-            icon: <Search className="w-8 h-8 text-orange-500" />,
-        },
-        {
-            target: 'tour-status-filter',
-            title: 'Filtro por status',
-            desc: 'Aqui voce mostra somente vagas abertas, fechadas, pausadas ou qualquer outro status.',
-            icon: <ListTodo className="w-8 h-8 text-indigo-500" />,
-        },
-        {
-            target: 'tour-municipio-filter',
-            title: 'Filtro por municipio',
-            desc: 'Use este campo para olhar apenas a cidade ou regional que voce quer acompanhar.',
-            icon: <Map className="w-8 h-8 text-teal-500" />,
-        },
-        {
-            target: 'tour-urgencia-filter',
-            title: 'Filtro por prazo',
-            desc: 'Este filtro separa o que esta urgente, o que vence em breve e o que ainda esta longe.',
-            icon: <AlertCircle className="w-8 h-8 text-red-500" />,
-        },
-        {
-            target: 'tour-import-btn',
-            title: 'Importar planilha',
-            desc: 'Use este botao quando chegar um arquivo novo para atualizar os dados do painel.',
+            id: 'table-actions',
+            target: 'tour-header-actions',
+            title: 'Acoes rapidas',
+            desc: 'Neste bloco ficam desfazer, refazer, importar, exportar e atualizar. Use essas acoes para corrigir, trazer novos dados ou baixar a base atual.',
             icon: <UploadCloud className="w-8 h-8 text-indigo-500" />,
         },
         {
-            target: 'tour-export-btn',
-            title: 'Exportar arquivo',
-            desc: 'Aqui voce baixa a versao atual da base para compartilhar ou guardar uma copia.',
-            icon: <Download className="w-8 h-8 text-slate-700" />,
+            id: 'table-record-count',
+            target: 'tour-record-count',
+            title: 'Exibidos',
+            desc: 'Este contador mostra quantas linhas estao aparecendo agora, ja considerando busca e filtros ativos.',
+            icon: <FileSpreadsheet className="w-8 h-8 text-indigo-500" />,
         },
         {
-            target: 'tour-sync-btn',
-            title: 'Atualizar da planilha online',
-            desc: 'Este botao busca os dados do Google Sheets e traz a versao mais recente para o sistema.',
-            icon: <TableProperties className="w-8 h-8 text-green-600" />,
+            id: 'table-filters',
+            target: 'tour-filters-controls',
+            title: 'Filtros',
+            desc: 'Aqui voce usa busca, status, municipio, prazo e o botao Corrigir Erros para chegar mais rapido no grupo de vagas que precisa analisar.',
+            icon: <Search className="w-8 h-8 text-orange-500" />,
         },
         {
+            id: 'table-head',
+            target: 'tour-table-head',
+            title: 'Cabecalho da tabela',
+            desc: 'O cabecalho resume as informacoes da grade: status rapido, vaga, candidato, prazo e ficha.',
+            icon: <ListTodo className="w-8 h-8 text-indigo-500" />,
+        },
+        {
+            id: 'table-grid',
             target: 'tour-table',
-            title: 'Tabela de acompanhamento',
-            desc: 'Esta e a tela principal. Aqui voce acompanha status, candidato, prazo e abre a ficha completa na ultima coluna.',
+            title: 'Grid de acompanhamento',
+            desc: 'Nesta grade cada linha representa uma vaga. Aqui voce acompanha a situacao geral sem precisar abrir tudo de uma vez.',
+            icon: <TableProperties className="w-8 h-8 text-sky-500" />,
+        },
+        {
+            id: 'table-record-button',
+            target: 'tour-record-open-btn',
+            title: 'Fichas',
+            desc: 'Use este botao da ultima coluna para abrir a ficha completa da vaga selecionada.',
             icon: <Edit2 className="w-8 h-8 text-blue-500" />,
+        },
+        {
+            id: 'table-record-fields',
+            target: 'tour-record-edit-fields',
+            title: 'Alteracoes',
+            desc: 'Dentro da ficha, esta area concentra os campos editaveis para atualizar status, profissional, candidato, contato, municipio, prazo e observacoes.',
+            icon: <Check className="w-8 h-8 text-emerald-500" />,
+        },
+        {
+            id: 'table-record-save',
+            target: 'tour-record-save-btn',
+            title: 'Salvar alteracoes',
+            desc: 'Depois de revisar a ficha, salve para aplicar as mudancas na linha e no painel.',
+            icon: <Save className="w-8 h-8 text-green-600" />,
         },
     ],
     DASHBOARD: [
         {
+            id: 'dashboard-tab',
             target: 'tour-tab-dashboard',
             title: 'Tela de graficos',
             desc: 'Ao clicar aqui, voce abre a area com os indicadores visuais da operacao.',
             icon: <BarChart2 className="w-8 h-8 text-indigo-500" />,
         },
         {
+            id: 'dashboard-panel',
             target: 'tour-dashboard-panel',
             title: 'Resumo visual',
             desc: 'Nesta tela voce bate o olho nos totais, nos status e nos principais motivos em grafico.',
             icon: <LayoutDashboard className="w-8 h-8 text-sky-500" />,
         },
         {
+            id: 'dashboard-create-chart',
             target: 'tour-create-chart-btn',
             title: 'Criar grafico',
-            desc: 'Use este botao para montar um grafico novo e salvar no painel.',
+            desc: 'Este botao abre o criador de grafico para montar novas visoes do painel.',
             icon: <PlusCircle className="w-8 h-8 text-blue-500" />,
+        },
+        {
+            id: 'dashboard-chart-modal',
+            target: 'tour-chart-modal',
+            title: 'Modal de grafico',
+            desc: 'Aqui voce define o titulo, a coluna usada e o tipo do grafico antes de salvar no dashboard.',
+            icon: <PieChartIcon className="w-8 h-8 text-indigo-500" />,
         },
     ],
     SHEETS: [
         {
+            id: 'sheets-tab',
             target: 'tour-tab-sheets',
             title: 'Modo planilha',
-            desc: 'Esta aba abre uma visao mais parecida com planilha, boa para editar linha por linha.',
+            desc: 'Esta aba abre uma visao parecida com planilha para editar linha por linha de forma rapida.',
             icon: <TableProperties className="w-8 h-8 text-green-500" />,
         },
         {
+            id: 'sheets-head',
+            target: 'tour-sheets-head',
+            title: 'Cabecalho da planilha',
+            desc: 'O cabecalho agrupa status, profissional, candidato cobertura, telefone, municipio e observacoes para orientar a edicao da linha.',
+            icon: <ListTodo className="w-8 h-8 text-indigo-500" />,
+        },
+        {
+            id: 'sheets-table',
             target: 'tour-sheets-table',
-            title: 'Planilha editavel',
-            desc: 'Preencha principalmente status, nome, candidato, contato, municipio e observacoes.',
+            title: 'Linhas editaveis',
+            desc: 'Todas as alteracoes feitas nas linhas desta planilha entram direto no painel e ajudam a manter a base atualizada.',
             icon: <Check className="w-8 h-8 text-emerald-500" />,
         },
     ],
 };
+
+const TUTORIAL_RECORD_MODAL_STEP_IDS = new Set(['table-record-fields', 'table-record-save']);
+const TUTORIAL_RECORD_EDIT_STEP_IDS = new Set(['table-record-fields', 'table-record-save']);
+const TUTORIAL_CHART_MODAL_STEP_IDS = new Set(['dashboard-chart-modal']);
 
 const WelcomeOverlay = ({ onFinish, userName }) => {
     const [stage, setStage] = useState('blank');
@@ -293,26 +460,31 @@ const WelcomeOverlay = ({ onFinish, userName }) => {
                 <h2
                     className={`absolute text-center text-4xl md:text-6xl font-black tracking-tight text-violet-950 transition-all duration-500 ${stage === 'system' ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-2'}`}
                 >
-                    SISTEMA DE GESTAO DE ADMISSAO
+                    RECRUTAMENTO
                 </h2>
             </div>
         </div>
     );
 };
 
-const WalkthroughTour = ({ section, steps, onComplete }) => {
+const WalkthroughTour = ({ section, steps, onComplete, onStepChange }) => {
     const [step, setStep] = useState(0);
     const [rect, setRect] = useState(null);
     const [dontShowAgain, setDontShowAgain] = useState(false);
     const [dialogSize, setDialogSize] = useState({ width: 360, height: 320 });
     const dialogRef = useRef(null);
     const currentStep = steps[step];
+    const progressPercent = steps.length > 1 ? ((step + 1) / steps.length) * 100 : 100;
 
     useEffect(() => {
         setStep(0);
         setRect(null);
         setDontShowAgain(false);
     }, [section]);
+
+    useEffect(() => {
+        if (onStepChange) onStepChange(currentStep || null);
+    }, [currentStep, onStepChange]);
 
     useEffect(() => {
         const measureDialog = () => {
@@ -366,13 +538,13 @@ const WalkthroughTour = ({ section, steps, onComplete }) => {
         const viewportPadding = 16;
         const viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1280;
         const viewportHeight = typeof window !== 'undefined' ? window.innerHeight : 720;
-        const fallbackWidth = Math.min(360, viewportWidth - (viewportPadding * 2));
+        const fallbackWidth = Math.min(420, viewportWidth - (viewportPadding * 2));
         const dialogWidth = Math.min(dialogSize.width || fallbackWidth, fallbackWidth);
         const dialogHeight = Math.min(dialogSize.height || 320, viewportHeight - (viewportPadding * 2));
 
         if (!rect) {
             return {
-                width: fallbackWidth,
+                width: dialogWidth,
                 maxHeight: viewportHeight - (viewportPadding * 2),
                 top: '50%',
                 left: '50%',
@@ -387,7 +559,7 @@ const WalkthroughTour = ({ section, steps, onComplete }) => {
         const maxTop = viewportHeight - dialogHeight - viewportPadding;
 
         return {
-            width: fallbackWidth,
+            width: dialogWidth,
             maxHeight: viewportHeight - (viewportPadding * 2),
             top: Math.max(viewportPadding, Math.min(preferredTop, maxTop)),
             left: Math.max(viewportPadding, Math.min(preferredLeft, maxLeft)),
@@ -416,85 +588,123 @@ const WalkthroughTour = ({ section, steps, onComplete }) => {
 
             <div
                 ref={dialogRef}
-                className="absolute bg-white rounded-3xl p-5 sm:p-6 shadow-[0_0_40px_rgba(0,0,0,0.3)] transition-all duration-500 animate-in zoom-in-95 overflow-y-auto"
+                className="absolute bg-white rounded-3xl p-5 sm:p-6 shadow-[0_0_40px_rgba(0,0,0,0.3)] transition-all duration-500 animate-in zoom-in-95 overflow-y-auto overflow-x-hidden"
                 style={dialogStyle}
             >
                 <button onClick={() => onComplete(false)} className="absolute top-4 right-4 text-slate-400 hover:text-slate-800 transition-colors" type="button"><X className="w-5 h-5" /></button>
 
                 <div className="flex items-center gap-3 mb-4">
                     <div className="bg-indigo-50 p-2 rounded-2xl">{currentStep.icon}</div>
-                    <h3 className="text-xl font-bold text-slate-800 pr-8">{currentStep.title}</h3>
+                    <div>
+                        <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-slate-400">Passo {step + 1} de {steps.length}</p>
+                        <h3 className="text-xl font-bold text-slate-800 pr-8">{currentStep.title}</h3>
+                    </div>
                 </div>
 
                 <p className="text-slate-600 text-sm mb-8 leading-relaxed">{currentStep.desc}</p>
 
-                <div className="flex items-center justify-between gap-3 mt-auto">
-                    <div className="flex gap-1.5">
-                        {steps.map((_, i) => <div key={i} className={`h-1.5 rounded-full transition-all duration-500 ${i === step ? 'w-5 bg-indigo-600' : 'w-1.5 bg-slate-200'}`} />)}
+                <div className="mt-auto space-y-4">
+                    <div className="space-y-2">
+                        <div className="flex items-center justify-between gap-3 text-[11px] font-bold uppercase tracking-[0.22em] text-slate-400">
+                            <span>Andamento</span>
+                            <span>{step + 1}/{steps.length}</span>
+                        </div>
+                        <div className="h-2 overflow-hidden rounded-full bg-slate-200">
+                            <div className="h-full rounded-full bg-indigo-600 transition-all duration-500" style={{ width: `${progressPercent}%` }} />
+                        </div>
                     </div>
-                    <div className="flex items-center gap-2">
-                        {step > 0 && (
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-h-[24px]">
+                            {step === steps.length - 1 && (
+                                <label className="flex items-center gap-2 cursor-pointer group">
+                                    <input type="checkbox" checked={dontShowAgain} onChange={(e) => setDontShowAgain(e.target.checked)} className="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer" />
+                                    <span className="text-[11px] font-medium text-slate-400 group-hover:text-slate-600 transition-colors">Nao exibir este tutorial novamente</span>
+                                </label>
+                            )}
+                        </div>
+                        <div className="flex items-center justify-end gap-2">
+                            {step > 0 && (
+                                <button
+                                    onClick={() => setStep((s) => Math.max(0, s - 1))}
+                                    className="inline-flex items-center justify-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 min-h-[44px] px-4 rounded-full shadow-sm active:scale-95 transition-all shrink-0"
+                                    type="button"
+                                    aria-label="Voltar um passo"
+                                >
+                                    <ChevronLeft className="w-4 h-4" />
+                                    <span className="text-sm font-semibold">Voltar</span>
+                                </button>
+                            )}
                             <button
-                                onClick={() => setStep((s) => Math.max(0, s - 1))}
-                                className="bg-slate-100 hover:bg-slate-200 text-slate-700 w-10 h-10 rounded-full flex items-center justify-center shadow-sm active:scale-95 transition-all shrink-0"
+                                onClick={() => {
+                                    if (step < steps.length - 1) setStep((s) => s + 1);
+                                    else onComplete(dontShowAgain);
+                                }}
+                                className="inline-flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white min-h-[44px] px-5 rounded-full text-sm font-bold shadow-md active:scale-95 transition-all shrink-0"
                                 type="button"
-                                aria-label="Voltar um passo"
                             >
-                                <ChevronLeft className="w-4 h-4" />
+                                <span>{step < steps.length - 1 ? 'Avancar' : 'Concluir'}</span>
+                                <ChevronRight className="w-4 h-4" />
                             </button>
-                        )}
-                        <button
-                            onClick={() => {
-                                if (step < steps.length - 1) setStep((s) => s + 1);
-                                else onComplete(dontShowAgain);
-                            }}
-                            className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 px-5 rounded-full flex items-center gap-2 text-sm shadow-md active:scale-95 transition-all shrink-0"
-                            type="button"
-                        >
-                            {step < steps.length - 1 ? 'Avancar' : 'Concluir'}
-                            <ChevronRight className="w-4 h-4" />
-                        </button>
+                        </div>
                     </div>
                 </div>
-
-                {step === steps.length - 1 && (
-                    <label className="flex items-center gap-2 mt-5 cursor-pointer group">
-                        <input type="checkbox" checked={dontShowAgain} onChange={(e) => setDontShowAgain(e.target.checked)} className="rounded text-indigo-600 focus:ring-indigo-500 w-4 h-4 cursor-pointer" />
-                        <span className="text-[11px] font-medium text-slate-400 group-hover:text-slate-600 transition-colors">Nao exibir este tutorial novamente</span>
-                    </label>
-                )}
             </div>
         </div>
     );
 };
 
-const LoginOverlay = ({ account, onCreateAccount, onLogin }) => {
-    const [username, setUsername] = useState('');
-    const [password, setPassword] = useState('');
-    const [accessKey, setAccessKey] = useState('');
+const LoginOverlay = ({ account, onCreateAccount, onLogin, notice }) => {
+    const hasAccount = hasStoredAccount(account);
+    const [mode, setMode] = useState(hasAccount ? 'login' : 'create');
+    const [createForm, setCreateForm] = useState({ username: '', password: '', confirmPassword: '', accessKey: '' });
     const [loginUser, setLoginUser] = useState('');
     const [loginPass, setLoginPass] = useState('');
     const [error, setError] = useState('');
 
-    const isFirstAccess = !account || !account.username;
-
     useEffect(() => {
-        if (!isFirstAccess && account?.username) {
-            setLoginUser(account.username);
+        setMode(hasAccount ? 'login' : 'create');
+        setLoginUser(hasAccount ? account.username : '');
+        setLoginPass('');
+        setCreateForm({ username: '', password: '', confirmPassword: '', accessKey: '' });
+        setError('');
+    }, [account, hasAccount]);
+
+    const switchMode = (nextMode) => {
+        if (nextMode === 'login' && !hasAccount) {
+            setError('Ainda nao existe uma conta criada neste navegador.');
+            return;
         }
-    }, [account, isFirstAccess]);
+
+        setMode(nextMode);
+        setError('');
+        if (nextMode === 'login' && hasAccount) {
+            setLoginUser(account.username);
+            setLoginPass('');
+        }
+    };
 
     const handleCreate = (e) => {
         e.preventDefault();
-        if (!username.trim() || !password.trim()) {
+        if (!createForm.username.trim() || !createForm.password.trim()) {
             setError('Preencha usuario e senha para criar o acesso.');
             return;
         }
-        if (accessKey !== 'Plansul@2025') {
-            setError('Palavra-chave invalida. O sistema nao foi criado.');
+        if (createForm.password !== createForm.confirmPassword) {
+            setError('A confirmacao da senha precisa ser igual a senha.');
             return;
         }
-        onCreateAccount({ username: username.trim(), password });
+        if (createForm.accessKey !== AUTH_ACCESS_KEY) {
+            setError('Palavra-chave invalida. O acesso nao foi liberado.');
+            return;
+        }
+
+        const now = new Date().toISOString();
+        onCreateAccount({
+            username: createForm.username.trim(),
+            password: createForm.password,
+            createdAt: account?.createdAt || now,
+            updatedAt: now,
+        });
     };
 
     const handleLogin = (e) => {
@@ -504,7 +714,12 @@ const LoginOverlay = ({ account, onCreateAccount, onLogin }) => {
             return;
         }
         const isUserValid = matchesSavedUsername(loginUser, account?.username);
-        const isPasswordValid = typeof account?.password === 'string' && loginPass === account.password;
+        const savedPassword = String(account?.password || '');
+        const currentPassword = String(loginPass || '');
+        const isPasswordValid = savedPassword && (
+            currentPassword === savedPassword
+            || currentPassword.trim() === savedPassword.trim()
+        );
         if (!isUserValid || !isPasswordValid) {
             setError('Credenciais invalidas. Use o usuario cadastrado ou apenas o primeiro nome.');
             return;
@@ -516,23 +731,128 @@ const LoginOverlay = ({ account, onCreateAccount, onLogin }) => {
     return (
         <div className="fixed inset-0 z-[260] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
             <div className="w-full max-w-md bg-white rounded-3xl border border-slate-200 shadow-2xl p-7">
-                <h2 className="text-2xl font-black text-slate-800 mb-2">{isFirstAccess ? 'Criar acesso' : 'Entrar no sistema'}</h2>
-                <p className="text-sm text-slate-500 mb-6">{isFirstAccess ? 'Defina seu login interno. A palavra-chave de autorizacao e obrigatoria.' : 'Use o usuario e senha cadastrados para liberar o painel.'}</p>
-                {!isFirstAccess && account?.username && <p className="text-xs text-slate-400 mb-4">Usuario salvo: <span className="font-bold text-slate-600">{account.username}</span>. Voce pode entrar com o nome completo ou apenas o primeiro nome.</p>}
+                <div className="flex items-center gap-3 mb-5">
+                    <div className="bg-indigo-600 p-2 rounded-2xl shadow-sm"><Briefcase className="w-5 h-5 text-white" /></div>
+                    <div>
+                        <h2 className="text-2xl font-black text-slate-800">Acesso ao sistema</h2>
+                        <p className="text-sm text-slate-500">Crie seu acesso com a palavra-chave ou entre com o login ja salvo.</p>
+                    </div>
+                </div>
 
-                {isFirstAccess ? (
-                    <form className="space-y-4" onSubmit={handleCreate}>
-                        <input value={username} onChange={(e) => { setUsername(e.target.value); if (error) setError(''); }} className="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-indigo-500" placeholder="Usuario" autoComplete="username" />
-                        <input type="password" value={password} onChange={(e) => { setPassword(e.target.value); if (error) setError(''); }} className="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-indigo-500" placeholder="Senha" autoComplete="new-password" />
-                        <input type="password" value={accessKey} onChange={(e) => { setAccessKey(e.target.value); if (error) setError(''); }} className="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-indigo-500" placeholder="Palavra-chave de autorizacao" />
-                        <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2.5 rounded-xl font-bold transition-colors">Criar e entrar</button>
-                    </form>
+                <div className="grid grid-cols-2 gap-2 p-1 mb-6 rounded-2xl bg-slate-100">
+                    <button
+                        onClick={() => switchMode('create')}
+                        className={`px-4 py-2.5 rounded-xl text-sm font-bold transition-all ${mode === 'create' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                        type="button"
+                    >
+                        Criar conta
+                    </button>
+                    <button
+                        onClick={() => switchMode('login')}
+                        className={`px-4 py-2.5 rounded-xl text-sm font-bold transition-all ${mode === 'login' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'} ${!hasAccount ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        type="button"
+                    >
+                        Ja tenho login
+                    </button>
+                </div>
+
+                {notice && <div className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-800">{notice}</div>}
+
+                {mode === 'create' ? (
+                    <div>
+                        <p className="text-sm text-slate-500 mb-5">
+                            {hasAccount
+                                ? 'Se precisar trocar o acesso, crie um novo login com a palavra-chave. Os dados do painel continuam salvos.'
+                                : 'Esta e a tela inicial para criar a primeira conta deste navegador.'}
+                        </p>
+
+                        <form className="space-y-4" onSubmit={handleCreate}>
+                            <input
+                                value={createForm.username}
+                                onChange={(e) => {
+                                    setCreateForm((current) => ({ ...current, username: e.target.value }));
+                                    if (error) setError('');
+                                }}
+                                className="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-indigo-500"
+                                placeholder="Usuario"
+                                autoComplete="username"
+                            />
+                            <input
+                                type="password"
+                                value={createForm.password}
+                                onChange={(e) => {
+                                    setCreateForm((current) => ({ ...current, password: e.target.value }));
+                                    if (error) setError('');
+                                }}
+                                className="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-indigo-500"
+                                placeholder="Senha"
+                                autoComplete="new-password"
+                            />
+                            <input
+                                type="password"
+                                value={createForm.confirmPassword}
+                                onChange={(e) => {
+                                    setCreateForm((current) => ({ ...current, confirmPassword: e.target.value }));
+                                    if (error) setError('');
+                                }}
+                                className="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-indigo-500"
+                                placeholder="Confirmar senha"
+                                autoComplete="new-password"
+                            />
+                            <input
+                                type="password"
+                                value={createForm.accessKey}
+                                onChange={(e) => {
+                                    setCreateForm((current) => ({ ...current, accessKey: e.target.value }));
+                                    if (error) setError('');
+                                }}
+                                className="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-indigo-500"
+                                placeholder="Palavra-chave de autorizacao"
+                            />
+                            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2.5 rounded-xl font-bold transition-colors">
+                                {hasAccount ? 'Salvar novo acesso' : 'Criar conta e entrar'}
+                            </button>
+                        </form>
+
+                        <p className="text-xs text-slate-400 mt-4 leading-relaxed">
+                            Palavra-chave para criar ou trocar o acesso: <span className="font-bold text-slate-600">{AUTH_ACCESS_KEY}</span>.
+                            Criar um novo acesso nao apaga os dados do painel.
+                        </p>
+                    </div>
                 ) : (
-                    <form className="space-y-4" onSubmit={handleLogin}>
-                        <input value={loginUser} onChange={(e) => { setLoginUser(e.target.value); if (error) setError(''); }} className="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-indigo-500" placeholder="Usuario" autoComplete="username" />
-                        <input type="password" value={loginPass} onChange={(e) => { setLoginPass(e.target.value); if (error) setError(''); }} className="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-indigo-500" placeholder="Senha" autoComplete="current-password" />
-                        <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2.5 rounded-xl font-bold transition-colors">Entrar</button>
-                    </form>
+                    <div>
+                        <p className="text-sm text-slate-500 mb-5">Use o usuario e a senha cadastrados para liberar o painel.</p>
+                        {hasAccount && <p className="text-xs text-slate-400 mb-4">Usuario salvo: <span className="font-bold text-slate-600">{account.username}</span>. Voce pode entrar com o nome completo ou apenas o primeiro nome.</p>}
+
+                        <form className="space-y-4" onSubmit={handleLogin}>
+                            <input
+                                value={loginUser}
+                                onChange={(e) => {
+                                    setLoginUser(e.target.value);
+                                    if (error) setError('');
+                                }}
+                                className="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-indigo-500"
+                                placeholder="Usuario"
+                                autoComplete="username"
+                            />
+                            <input
+                                type="password"
+                                value={loginPass}
+                                onChange={(e) => {
+                                    setLoginPass(e.target.value);
+                                    if (error) setError('');
+                                }}
+                                className="w-full px-4 py-2.5 rounded-xl border border-slate-300 focus:ring-2 focus:ring-indigo-500"
+                                placeholder="Senha"
+                                autoComplete="current-password"
+                            />
+                            <button type="submit" className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2.5 rounded-xl font-bold transition-colors">Entrar</button>
+                        </form>
+
+                        <button onClick={() => switchMode('create')} className="mt-4 text-sm font-semibold text-indigo-600 hover:text-indigo-800 transition-colors" type="button">
+                            Esqueci meus dados ou quero criar outro acesso
+                        </button>
+                    </div>
                 )}
 
                 {error && <p className="text-sm text-red-600 mt-4 font-semibold">{error}</p>}
@@ -549,10 +869,17 @@ export default function App() {
     const [customChartsRaw, setCustomCharts] = useLocalStorage('vagas_custom_charts', []);
     const customCharts = Array.isArray(customChartsRaw) ? customChartsRaw : [];
 
-    const [savedAccountRaw, setSavedAccount] = useLocalStorage('vagas_internal_account', null);
-    const savedAccount = savedAccountRaw && typeof savedAccountRaw === 'object' ? savedAccountRaw : null;
-    const [isAuthenticated, setIsAuthenticated] = useState(false);
-    const [currentUsername, setCurrentUsername] = useState('');
+    const [savedAccountRaw, setLegacySavedAccount] = useLocalStorage(AUTH_LEGACY_STORAGE_KEY, null);
+    const [encryptedAccountDb, setEncryptedAccountDb] = useLocalStorage(AUTH_DB_STORAGE_KEY, '');
+    const decryptedAccount = useMemo(() => readEncryptedExcelAuthDb(encryptedAccountDb), [encryptedAccountDb]);
+    const legacyAccount = hasStoredAccount(savedAccountRaw) ? savedAccountRaw : null;
+    const savedAccount = hasStoredAccount(decryptedAccount) ? decryptedAccount : legacyAccount;
+    const [authSessionRaw, setAuthSession] = useLocalStorage('vagas_auth_session', null);
+    const authSession = authSessionRaw && typeof authSessionRaw === 'object' ? authSessionRaw : null;
+    const sessionMatchesSavedAccount = hasActiveAuthSession(authSession, savedAccount);
+    const [isAuthenticated, setIsAuthenticated] = useState(sessionMatchesSavedAccount);
+    const [currentUsername, setCurrentUsername] = useState(sessionMatchesSavedAccount ? savedAccount.username : '');
+    const [authNotice, setAuthNotice] = useState('');
 
     const [showWelcome, setShowWelcome] = useState(false);
     const [savedTutorialProgressRaw, setSavedTutorialProgress] = useLocalStorage('vagas_tutorial_sections', DEFAULT_TUTORIAL_PROGRESS);
@@ -561,6 +888,7 @@ export default function App() {
     const [showTutorial, setShowTutorial] = useState(false);
     const [tutorialSection, setTutorialSection] = useState('TABELA');
     const [pendingTutorialSection, setPendingTutorialSection] = useState(null);
+    const [tutorialActiveStep, setTutorialActiveStep] = useState(null);
 
     const [loading, setLoading] = useState(false);
     const [isInitialSyncing, setIsInitialSyncing] = useState(false);
@@ -579,10 +907,88 @@ export default function App() {
     const [isCinematic, setIsCinematic] = useState(false);
 
     const mainScrollRef = useRef(null);
+    const persistAccount = (account) => {
+        if (!hasStoredAccount(account)) {
+            setEncryptedAccountDb('');
+            setLegacySavedAccount(null);
+            return;
+        }
+
+        const encryptedDb = createEncryptedExcelAuthDb(account);
+        if (encryptedDb) {
+            setEncryptedAccountDb(encryptedDb);
+            setLegacySavedAccount(null);
+            return;
+        }
+
+        // Fallback para nao perder login caso exista algum erro inesperado na serializacao.
+        setLegacySavedAccount(account);
+    };
+
+    const scrollMainToTop = (behavior = 'smooth') => {
+        if (mainScrollRef.current) mainScrollRef.current.scrollTo({ top: 0, behavior });
+    };
 
     const data = Array.isArray(history.present) ? history.present : [];
     const tutorialSteps = TUTORIAL_STEPS[tutorialSection] || [];
     const hasCompletedTutorialSection = (section) => savedTutorialProgress[section] || sessionTutorialProgress[section];
+    const editPrazoFieldKey = useMemo(() => getPrazoKey(editFormData), [editFormData]);
+    const resetAuthenticatedUi = () => {
+        setIsAuthenticated(false);
+        setCurrentUsername('');
+        setShowWelcome(false);
+        setShowTutorial(false);
+        setPendingTutorialSection(null);
+        setTutorialActiveStep(null);
+        setSelectedRecord(null);
+        setIsEditing(false);
+        setEditFormData({});
+        setIsChartModalOpen(false);
+        setIsGSheetsModalOpen(false);
+    };
+
+    useEffect(() => {
+        if (!legacyAccount || hasStoredAccount(decryptedAccount)) return;
+        const encryptedDb = createEncryptedExcelAuthDb(legacyAccount);
+        if (encryptedDb) {
+            setEncryptedAccountDb(encryptedDb);
+            setLegacySavedAccount(null);
+        }
+    }, [decryptedAccount, legacyAccount, setEncryptedAccountDb, setLegacySavedAccount]);
+
+    useEffect(() => {
+        if (!savedAccount) {
+            if (authSession) setAuthSession(null);
+            setIsAuthenticated(false);
+            setCurrentUsername('');
+            return;
+        }
+
+        if (!authSession?.authenticated || !matchesSavedUsername(authSession.username, savedAccount.username)) {
+            setIsAuthenticated(false);
+            setCurrentUsername('');
+            return undefined;
+        }
+
+        const expiryTimestamp = getAuthSessionExpiryTimestamp(authSession);
+        if (!expiryTimestamp || expiryTimestamp <= Date.now()) {
+            setAuthSession(null);
+            setAuthNotice('Sua sessao expirou apos 1 hora. Faca login novamente.');
+            resetAuthenticatedUi();
+            return undefined;
+        }
+
+        setCurrentUsername(savedAccount.username);
+        setIsAuthenticated(true);
+
+        const timer = window.setTimeout(() => {
+            setAuthSession(null);
+            setAuthNotice('Sua sessao expirou apos 1 hora. Faca login novamente.');
+            resetAuthenticatedUi();
+        }, expiryTimestamp - Date.now());
+
+        return () => window.clearTimeout(timer);
+    }, [authSession, savedAccount]);
 
     useEffect(() => {
         if (showWelcome || !isAuthenticated || data.length === 0 || showTutorial || activeTab !== 'TABELA' || hasCompletedTutorialSection('TABELA')) {
@@ -626,19 +1032,35 @@ export default function App() {
 
         setPendingTutorialSection(null);
         setShowTutorial(false);
+        setTutorialActiveStep(null);
+        setSelectedRecord(null);
+        setIsEditing(false);
+        setEditFormData({});
+        setIsChartModalOpen(false);
+        if (typeof window !== 'undefined') window.requestAnimationFrame(() => scrollMainToTop());
     };
 
     const handleCreateAccount = (account) => {
-        setSavedAccount(account);
+        persistAccount(account);
+        setAuthSession({ authenticated: true, username: account.username, at: new Date().toISOString() });
+        setAuthNotice('');
         setCurrentUsername(account.username);
         setIsAuthenticated(true);
         setShowWelcome(true);
     };
 
     const handleLoginSuccess = () => {
+        setAuthSession({ authenticated: true, username: savedAccount?.username || '', at: new Date().toISOString() });
+        setAuthNotice('');
         setCurrentUsername(savedAccount?.username || '');
         setIsAuthenticated(true);
         setShowWelcome(true);
+    };
+
+    const handleLogout = () => {
+        setAuthSession(null);
+        setAuthNotice('');
+        resetAuthenticatedUi();
     };
 
     const processDataImport = (newDataArray, fromSheets, isSilent = false) => {
@@ -665,13 +1087,6 @@ export default function App() {
     };
 
     useEffect(() => {
-        if (!(typeof window !== 'undefined' && window.XLSX)) {
-            const script = document.createElement('script');
-            script.src = 'https://cdn.sheetjs.com/xlsx-0.20.0/package/dist/xlsx.full.min.js';
-            script.async = true;
-            document.body.appendChild(script);
-        }
-
         const autoSyncWithSheets = async () => {
             if (localData.length === 0) {
                 setIsInitialSyncing(true);
@@ -723,7 +1138,7 @@ export default function App() {
         setIsCinematic(true);
         setTimeout(() => {
             callback();
-            if (mainScrollRef.current) mainScrollRef.current.scrollTo({ top: 0, behavior: 'auto' });
+            scrollMainToTop('auto');
             setTimeout(() => setIsCinematic(false), 50);
         }, 350);
     };
@@ -774,9 +1189,9 @@ export default function App() {
         setIsGSheetsModalOpen(false);
         try {
             const buffer = await file.arrayBuffer();
-            const workbook = window.XLSX.read(buffer, { type: 'array' });
+            const workbook = XLSX.read(buffer, { type: 'array' });
             const worksheet = workbook.Sheets.PAINEL || workbook.Sheets[workbook.SheetNames[0]];
-            processDataImport(window.XLSX.utils.sheet_to_json(worksheet, { defval: '', raw: false }), false);
+            processDataImport(XLSX.utils.sheet_to_json(worksheet, { defval: '', raw: false }), false);
         } catch (error) {
             alert('Erro de parsing.');
         } finally {
@@ -786,16 +1201,16 @@ export default function App() {
     };
 
     const handleExportExcel = () => {
-        if (!window.XLSX || data.length === 0) return;
+        if (data.length === 0) return;
         const exportData = data.map((row) => {
             const newRow = { ...row };
             delete newRow._id;
             delete newRow._isInvalid;
             return newRow;
         });
-        const wb = window.XLSX.utils.book_new();
-        window.XLSX.utils.book_append_sheet(wb, window.XLSX.utils.json_to_sheet(exportData), 'PAINEL_ATUALIZADO');
-        window.XLSX.writeFile(wb, `Vagas_${new Date().toISOString().slice(0, 10)}.xlsx`);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(exportData), 'PAINEL_ATUALIZADO');
+        XLSX.writeFile(wb, `Vagas_${new Date().toISOString().slice(0, 10)}.xlsx`);
     };
 
     const handleInlineEdit = (id, field, value) => {
@@ -888,7 +1303,7 @@ export default function App() {
             const mMun = filters.municipio === 'TODOS' || String(item['NRE / MUNICIPIO'] || '').trim() === filters.municipio;
             let mUrg = true;
             if (filters.urgencia !== 'TODOS') {
-                const dias = getDaysDiff(item['Inicio Situacao']);
+                const dias = getDaysDiff(getPrazoValue(item));
                 if (filters.urgencia === 'URGENTE') mUrg = dias !== null && dias <= 5;
                 if (filters.urgencia === 'MEDIA') mUrg = dias === null || (dias > 5 && dias <= 30);
                 if (filters.urgencia === 'LONGE') mUrg = dias !== null && dias > 30;
@@ -904,8 +1319,8 @@ export default function App() {
             if (!isResA && isResB) return -1;
             if (isResA && !isResB) return 1;
             if (!isResA && !isResB) {
-                const d_A = getDaysDiff(a['Inicio Situacao']);
-                const d_B = getDaysDiff(b['Inicio Situacao']);
+                const d_A = getDaysDiff(getPrazoValue(a));
+                const d_B = getDaysDiff(getPrazoValue(b));
                 if (d_A !== null && d_B !== null) return d_A - d_B;
                 if (d_A !== null && d_B === null) return -1;
                 if (d_A === null && d_B !== null) return 1;
@@ -914,11 +1329,54 @@ export default function App() {
         });
     }, [data, searchTerm, filters, showErrorsOnly]);
 
+    const sheetsColumns = useMemo(() => {
+        const allColumns = Array.from(new Set(filteredData.flatMap((row) => Object.keys(row || {}))))
+            .filter((column) => !['_id', '_isInvalid'].includes(column));
+
+        const prioritized = SHEETS_PRIORITY_COLUMNS.filter((column) => allColumns.includes(column));
+        const others = allColumns.filter((column) => !SHEETS_PRIORITY_COLUMNS.includes(column)).sort((a, b) => a.localeCompare(b));
+
+        return [...prioritized, ...others];
+    }, [filteredData]);
+
+    useEffect(() => {
+        if (!showTutorial || tutorialSection !== 'TABELA') return;
+
+        const currentStepId = tutorialActiveStep?.id;
+        if (!TUTORIAL_RECORD_MODAL_STEP_IDS.has(currentStepId)) {
+            setSelectedRecord(null);
+            setIsEditing(false);
+            return;
+        }
+
+        const previewRow = filteredData[0];
+        if (!previewRow) return;
+
+        setSelectedRecord((current) => (current?._id === previewRow._id ? current : previewRow));
+
+        if (TUTORIAL_RECORD_EDIT_STEP_IDS.has(currentStepId)) {
+            setEditFormData((current) => (current?._id === previewRow._id ? current : { ...previewRow }));
+            setIsEditing(true);
+        } else {
+            setIsEditing(false);
+        }
+    }, [filteredData, showTutorial, tutorialActiveStep, tutorialSection]);
+
+    useEffect(() => {
+        if (!showTutorial || tutorialSection !== 'DASHBOARD') {
+            setIsChartModalOpen(false);
+            return;
+        }
+
+        const currentStepId = tutorialActiveStep?.id;
+        setIsChartModalOpen(TUTORIAL_CHART_MODAL_STEP_IDS.has(currentStepId));
+    }, [showTutorial, tutorialActiveStep, tutorialSection]);
+
     const tableAnimationKey = `${activeTab}-${searchTerm}-${filters.status}-${filters.municipio}-${filters.urgencia}-${showErrorsOnly}`;
 
     return (
         <React.Fragment>
-            {!isAuthenticated && <LoginOverlay account={savedAccount} onCreateAccount={handleCreateAccount} onLogin={handleLoginSuccess} />}
+            {!isAuthenticated && <LoginOverlay account={savedAccount} onCreateAccount={handleCreateAccount} onLogin={handleLoginSuccess} notice={authNotice} />}
             {showWelcome && isAuthenticated && <WelcomeOverlay userName={currentUsername} onFinish={() => setShowWelcome(false)} />}
 
             <div className={`h-screen w-full bg-slate-50 flex flex-col relative overflow-hidden transition-opacity duration-500 ease-in-out ${(showWelcome || !isAuthenticated) ? 'opacity-0' : 'opacity-100'}`}>
@@ -929,36 +1387,54 @@ export default function App() {
         `}</style>
 
                 <header className="bg-white border-b border-slate-200 z-20 shadow-sm shrink-0">
-                    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                            <div className="bg-indigo-600 p-2 rounded-lg shadow-sm"><Briefcase className="w-5 h-5 text-white" /></div>
-                            <h1 className="text-xl font-bold text-slate-800 tracking-tight hidden lg:block">Sistema de Gestao</h1>
-                        </div>
-
-                        <div id="tour-tabs" className="flex bg-slate-100 p-1 rounded-lg overflow-x-auto hide-scrollbar relative">
-                            <button onClick={() => handleTabChange('TABELA')} className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 rounded-md text-sm font-semibold transition-all duration-300 whitespace-nowrap ${activeTab === 'TABELA' ? 'bg-white text-indigo-700 shadow-sm transform scale-100' : 'text-slate-500 hover:text-slate-700 scale-95'}`} type="button"><ListTodo className="w-4 h-4" /> <span className="hidden sm:inline">Acompanhamento</span>{metrics?.invalidCount > 0 && <span className="w-2 h-2 rounded-full bg-red-500 ml-1 animate-pulse" />}</button>
-                            <button id="tour-tab-dashboard" onClick={() => handleTabChange('DASHBOARD', { openTutorial: true })} className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 rounded-md text-sm font-semibold transition-all duration-300 whitespace-nowrap ${activeTab === 'DASHBOARD' ? 'bg-white text-indigo-700 shadow-sm transform scale-100' : 'text-slate-500 hover:text-slate-700 scale-95'}`} type="button"><LayoutDashboard className="w-4 h-4" /> <span className="hidden sm:inline">Graficos</span></button>
-                            <button id="tour-tab-sheets" onClick={() => handleTabChange('SHEETS', { openTutorial: true })} className={`flex items-center gap-2 px-3 sm:px-4 py-1.5 rounded-md text-sm font-semibold transition-all duration-300 whitespace-nowrap ${activeTab === 'SHEETS' ? 'bg-green-600 text-white shadow-sm transform scale-100' : 'text-green-700 hover:bg-green-50 scale-95'}`} type="button"><TableProperties className="w-4 h-4" /> <span className="hidden sm:inline">Modo Planilha</span></button>
-                        </div>
-
-                        <div className="flex items-center gap-2 sm:gap-3">
-                            <div className="flex items-center bg-slate-100 rounded-lg p-1 mr-2 border border-slate-200">
-                                <button onClick={handleUndo} disabled={history.past.length === 0} className="p-1.5 text-slate-600 hover:bg-white hover:shadow-sm rounded-md disabled:opacity-30 disabled:hover:bg-transparent transition-all" type="button"><Undo2 className="w-4 h-4" /></button>
-                                <div className="w-px h-4 bg-slate-300 mx-1" />
-                                <button onClick={handleRedo} disabled={history.future.length === 0} className="p-1.5 text-slate-600 hover:bg-white hover:shadow-sm rounded-md disabled:opacity-30 disabled:hover:bg-transparent transition-all" type="button"><Redo2 className="w-4 h-4" /></button>
+                    <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-3">
+                        <div className="grid grid-cols-1 xl:grid-cols-[auto_minmax(320px,1fr)_minmax(520px,1.2fr)] items-center gap-3 xl:gap-5">
+                            <div className="flex items-center gap-3 min-w-0 shrink-0">
+                                <div className="bg-indigo-600 p-2.5 rounded-xl shadow-sm shrink-0"><Briefcase className="w-5 h-5 text-white" /></div>
+                                <div className="min-w-0">
+                                    <h1 className="text-xl font-black text-slate-800 tracking-tight whitespace-nowrap">Recrutamento</h1>
+                                    <p className="hidden 2xl:block text-[11px] font-bold uppercase tracking-[0.22em] text-slate-400">Controle de admissoes</p>
+                                </div>
                             </div>
-                            <label id="tour-import-btn" className="cursor-pointer flex items-center gap-2 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-sm font-bold transition-all shadow-sm active:scale-95 border border-slate-200">
-                                <UploadCloud className="w-4 h-4" /> <span className="hidden xl:inline">Importar</span>
-                                <input type="file" accept=".xlsx, .xls" className="hidden" onChange={handleFileUpload} disabled={loading} />
-                            </label>
-                            <button id="tour-export-btn" onClick={handleExportExcel} className="flex items-center gap-2 px-3 py-2 bg-slate-800 text-white hover:bg-slate-900 rounded-lg text-sm font-semibold transition-all shadow-md hover:shadow-lg whitespace-nowrap active:scale-95" type="button"><Download className="w-4 h-4" /> <span className="hidden xl:inline">Exportar Validado</span></button>
-                            <button id="tour-sync-btn" onClick={() => setIsGSheetsModalOpen(true)} className="flex items-center gap-2 px-3 py-2 bg-green-100 text-green-800 hover:bg-green-200 border border-green-300 rounded-lg text-sm font-bold transition-all shadow-sm whitespace-nowrap active:scale-95" type="button"><BarChart2 className="w-4 h-4" /> <span className="hidden xl:inline">Atualizar Planilha</span></button>
+
+                            <div className="min-w-0">
+                                <div id="tour-tabs" className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl overflow-x-auto hide-scrollbar w-full shadow-inner shadow-slate-200/60">
+                                    <button onClick={() => handleTabChange('TABELA')} className={`flex-1 inline-flex items-center justify-center gap-2 min-w-[148px] px-4 py-2.5 rounded-lg text-sm font-semibold transition-all duration-300 whitespace-nowrap ${activeTab === 'TABELA' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:bg-white/60 hover:text-slate-700'}`} type="button"><ListTodo className="w-4 h-4" /> <span>Tabela</span>{metrics?.invalidCount > 0 && <span className="w-2 h-2 rounded-full bg-red-500 ml-1 animate-pulse" />}</button>
+                                    <button id="tour-tab-dashboard" onClick={() => handleTabChange('DASHBOARD', { openTutorial: true })} className={`flex-1 inline-flex items-center justify-center gap-2 min-w-[148px] px-4 py-2.5 rounded-lg text-sm font-semibold transition-all duration-300 whitespace-nowrap ${activeTab === 'DASHBOARD' ? 'bg-white text-indigo-700 shadow-sm' : 'text-slate-500 hover:bg-white/60 hover:text-slate-700'}`} type="button"><LayoutDashboard className="w-4 h-4" /> <span>Graficos</span></button>
+                                    <button id="tour-tab-sheets" onClick={() => handleTabChange('SHEETS', { openTutorial: true })} className={`flex-1 inline-flex items-center justify-center gap-2 min-w-[148px] px-4 py-2.5 rounded-lg text-sm font-semibold transition-all duration-300 whitespace-nowrap ${activeTab === 'SHEETS' ? 'bg-green-600 text-white shadow-sm' : 'text-green-700 hover:bg-white/60'}`} type="button"><TableProperties className="w-4 h-4" /> <span>Planilha</span></button>
+                                </div>
+                            </div>
+
+                            <div id="tour-header-actions" className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-[auto_repeat(3,minmax(0,1fr))_auto] items-stretch gap-2">
+                                <div className="flex items-center justify-center bg-slate-100 rounded-lg p-1 border border-slate-200 min-h-[46px]">
+                                    <button id="tour-undo-btn" onClick={handleUndo} disabled={history.past.length === 0} className="p-1.5 text-slate-600 hover:bg-white hover:shadow-sm rounded-md disabled:opacity-30 disabled:hover:bg-transparent transition-all" type="button"><Undo2 className="w-4 h-4" /></button>
+                                    <div className="w-px h-4 bg-slate-300 mx-1" />
+                                    <button id="tour-redo-btn" onClick={handleRedo} disabled={history.future.length === 0} className="p-1.5 text-slate-600 hover:bg-white hover:shadow-sm rounded-md disabled:opacity-30 disabled:hover:bg-transparent transition-all" type="button"><Redo2 className="w-4 h-4" /></button>
+                                </div>
+                                <label id="tour-import-btn" className="cursor-pointer inline-flex w-full items-center justify-center gap-2 px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-sm font-bold transition-all shadow-sm active:scale-95 border border-slate-200 min-h-[46px]">
+                                    <UploadCloud className="w-4 h-4" /> <span>Importar</span>
+                                    <input type="file" accept=".xlsx, .xls" className="hidden" onChange={handleFileUpload} disabled={loading} />
+                                </label>
+                                <button id="tour-export-btn" onClick={handleExportExcel} className="inline-flex w-full items-center justify-center gap-2 px-4 py-2.5 bg-slate-800 text-white hover:bg-slate-900 rounded-lg text-sm font-semibold transition-all shadow-md hover:shadow-lg whitespace-nowrap active:scale-95 min-h-[46px]" type="button"><Download className="w-4 h-4" /> <span>Exportar</span></button>
+                                <button id="tour-sync-btn" onClick={() => setIsGSheetsModalOpen(true)} className="inline-flex w-full items-center justify-center gap-2 px-4 py-2.5 bg-green-100 text-green-800 hover:bg-green-200 border border-green-300 rounded-lg text-sm font-bold transition-all shadow-sm whitespace-nowrap active:scale-95 min-h-[46px]" type="button"><BarChart2 className="w-4 h-4" /> <span>Atualizar</span></button>
+                                {isAuthenticated && (
+                                    <div className="inline-flex min-w-[150px] items-center justify-between gap-3 px-3 py-2 rounded-lg border border-slate-200 bg-white shadow-sm min-h-[46px]">
+                                        <div className="flex min-w-0 flex-col leading-none text-left">
+                                            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Acesso</span>
+                                            <span className="text-sm font-semibold text-slate-700 truncate">{getFirstName(currentUsername)}</span>
+                                        </div>
+                                        <button onClick={handleLogout} className="shrink-0 p-2 bg-white border border-slate-200 hover:bg-slate-100 text-slate-600 rounded-lg transition-all shadow-sm active:scale-95" type="button" aria-label="Sair do sistema">
+                                            <LogOut className="w-4 h-4" />
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     </div>
                 </header>
 
                 <main ref={mainScrollRef} className={`flex-1 overflow-y-auto overflow-x-hidden relative w-full bg-slate-50 transition-all duration-400 ease-in-out ${isCinematic ? 'cinematic-effect' : ''}`}>
-                    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full relative z-10 min-h-full flex flex-col">
+                    <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full relative z-10 min-h-full flex flex-col">
                         {data.length === 0 && !isInitialSyncing && (
                             <div className="flex flex-col items-center justify-center flex-1 text-center animate-in fade-in zoom-in-95 duration-500 my-auto">
                                 <div className="w-24 h-24 bg-indigo-50 rounded-full flex items-center justify-center mb-6"><Map className="w-12 h-12 text-indigo-400" /></div>
@@ -975,32 +1451,33 @@ export default function App() {
                                             <AlertCircle className="w-5 h-5 text-indigo-600" />
                                             A tabela ordena com prioridade vagas abertas em atraso ou urgente.
                                         </div>
-                                        <div className="text-xs font-bold text-indigo-600 bg-white px-2 py-1 rounded-md shadow-sm transition-all">Exibindo {filteredData.length} registros</div>
+                                        <div id="tour-record-count" className="text-xs font-bold text-indigo-600 bg-white px-2 py-1 rounded-md shadow-sm transition-all">Exibindo {filteredData.length} registros</div>
                                     </div>
 
-                                    <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
+                                    <div id="tour-filters-controls" className="grid grid-cols-1 md:grid-cols-5 gap-3">
                                         <div id="tour-search" className="relative group"><Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 group-focus-within:text-indigo-500 transition-colors" /><input type="text" placeholder="Buscar..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="pl-9 pr-4 py-2.5 border border-slate-300 rounded-lg text-sm w-full focus:ring-2 focus:ring-indigo-500 transition-all" /></div>
                                         <select id="tour-status-filter" value={filters.status} onChange={(e) => setFilters((f) => ({ ...f, status: e.target.value }))} className="px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 bg-white font-medium transition-all"><option value="TODOS">Todos os Status</option>{listOptions.status.map((s) => <option key={s} value={s}>{s}</option>)}</select>
                                         <select id="tour-municipio-filter" value={filters.municipio} onChange={(e) => setFilters((f) => ({ ...f, municipio: e.target.value }))} className="px-3 py-2.5 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 bg-white transition-all"><option value="TODOS">Municipios</option>{listOptions.municipios.map((m) => <option key={m} value={m}>{m}</option>)}</select>
-                                        <select id="tour-urgencia-filter" value={filters.urgencia} onChange={(e) => setFilters((f) => ({ ...f, urgencia: e.target.value }))} className="px-3 py-2.5 border border-indigo-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 bg-indigo-50 font-bold text-indigo-900 transition-all"><option value="TODOS">Filtro Termico</option><option value="URGENTE">Urgente (&lt;= 5d)</option><option value="MEDIA">Em breve (6 a 30d)</option><option value="LONGE">Longo Prazo</option></select>
+                                        <select id="tour-urgencia-filter" value={filters.urgencia} onChange={(e) => setFilters((f) => ({ ...f, urgencia: e.target.value }))} className="px-3 py-2.5 border border-indigo-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 bg-indigo-50 font-bold text-indigo-900 transition-all"><option value="TODOS">Filtro de Prazo</option><option value="URGENTE">Urgente (&lt;= 5d)</option><option value="MEDIA">Em breve (6 a 30d)</option><option value="LONGE">Longo Prazo</option></select>
                                         {showErrorsOnly ? (
                                             <button id="tour-errors-filter" onClick={() => setShowErrorsOnly(false)} className="bg-slate-200 text-slate-700 font-bold text-xs rounded-lg hover:bg-slate-300 transition-all flex items-center justify-center gap-2 active:scale-95" type="button"><X className="w-4 h-4" /> Mostrar Tudo</button>
-                                        ) : metrics?.invalidCount > 0 && (
-                                            <button id="tour-errors-filter" onClick={() => setShowErrorsOnly(true)} className="bg-red-100 text-red-700 font-bold text-xs rounded-lg hover:bg-red-200 transition-all flex items-center justify-center gap-2 active:scale-95 animate-pulse" type="button"><AlertCircle className="w-4 h-4" /> Corrigir Erros</button>
+                                        ) : (
+                                            <button id="tour-errors-filter" onClick={() => setShowErrorsOnly(true)} disabled={!metrics?.invalidCount} className={`font-bold text-xs rounded-lg transition-all flex items-center justify-center gap-2 active:scale-95 disabled:cursor-not-allowed disabled:hover:bg-slate-100 ${metrics?.invalidCount > 0 ? 'bg-red-100 text-red-700 hover:bg-red-200 animate-pulse' : 'bg-slate-100 text-slate-400 border border-slate-200'}`} type="button"><AlertCircle className="w-4 h-4" /> {metrics?.invalidCount > 0 ? 'Corrigir Erros' : 'Sem erros agora'}</button>
                                         )}
                                     </div>
                                 </div>
 
                                 <div className="overflow-x-auto relative flex-1 min-h-[400px]">
                                     <table className="w-full text-left text-sm whitespace-nowrap">
-                                        <thead className="bg-slate-800 border-b border-slate-700 text-slate-200 font-semibold text-xs uppercase tracking-wider sticky top-0 z-10">
-                                            <tr><th className="px-6 py-4">Status Rapido</th><th className="px-6 py-4">Vaga</th><th className="px-6 py-4">Candidato</th><th className="px-6 py-4">Prazo Termico</th><th className="px-6 py-4 text-right">Ficha</th></tr>
+                                        <thead id="tour-table-head" className="bg-slate-800 border-b border-slate-700 text-slate-200 font-semibold text-xs uppercase tracking-wider sticky top-0 z-10">
+                                            <tr><th id="tour-table-col-status" className="px-6 py-4">Status Rapido</th><th id="tour-table-col-vaga" className="px-6 py-4">Vaga</th><th id="tour-table-col-candidato" className="px-6 py-4">Candidato</th><th id="tour-table-col-prazo" className="px-6 py-4">Prazo</th><th id="tour-table-col-ficha" className="px-6 py-4 text-right">Ficha</th></tr>
                                         </thead>
                                         <tbody id="tour-table" key={tableAnimationKey} className="divide-y divide-slate-200/50">
                                             {filteredData.slice(0, 100).map((row, index) => {
                                                 const status = safeGet(row, 'Status');
                                                 const candidato = row.Candidato || 'SEM COBERTURA';
-                                                const diasParaInicio = getDaysDiff(row['Inicio Situacao']);
+                                                const prazoValue = getPrazoValue(row);
+                                                const diasParaInicio = getDaysDiff(prazoValue);
                                                 return (
                                                     <tr key={row._id} className={`${getRowThermalClass(diasParaInicio, status, candidato, row._isInvalid)} group anim-cascade transition-all duration-300 hover:shadow-sm`} style={{ animationDelay: `${index * 15}ms` }}>
                                                         <td className="px-6 py-4 relative">
@@ -1011,14 +1488,14 @@ export default function App() {
                                                         </td>
                                                         <td className="px-6 py-4"><div className={`font-bold ${row._isInvalid ? 'text-red-700' : 'text-slate-900'}`}>{row['Nome Subs'] || 'FALTANDO'}</div><div className="text-slate-600 text-xs mt-0.5">{row.CARGO} • {row['NRE / MUNICIPIO']}</div></td>
                                                         <td className="px-6 py-4"><div className={`font-bold ${candidato === 'SEM COBERTURA' ? 'text-red-700' : 'text-slate-800'}`}>{candidato}</div><div className="text-slate-500 text-xs mt-0.5">{row['Contato Candidato'] || 'Sem contato'}</div></td>
-                                                        <td className="px-6 py-4"><div className="font-bold text-slate-800">{row['Inicio Situacao'] || '-'}</div>
+                                                        <td className="px-6 py-4"><div className="font-bold text-slate-800">{prazoValue || 'Sem prazo'}</div>
                                                             {diasParaInicio !== null && !['FECHADA', 'ENCAMINHADA', 'CANCELADA'].includes(status) && candidato === 'SEM COBERTURA' && (
                                                                 <div className={`text-xs mt-1 font-bold inline-block px-2 py-0.5 rounded shadow-sm transition-transform group-hover:scale-105 ${diasParaInicio < 0 ? 'bg-red-600 text-white' : diasParaInicio === 0 ? 'bg-red-500 text-white' : diasParaInicio <= 5 ? 'bg-orange-500 text-white' : diasParaInicio <= 15 ? 'bg-yellow-400 text-yellow-900' : diasParaInicio <= 30 ? 'bg-lime-500 text-lime-900' : 'bg-green-500 text-white'}`}>
                                                                     {diasParaInicio < 0 ? `Atrasado ${Math.abs(diasParaInicio)}d` : diasParaInicio === 0 ? 'E Hoje!' : `Faltam ${diasParaInicio}d`}
                                                                 </div>
                                                             )}
                                                         </td>
-                                                        <td className="px-6 py-4 text-right"><button onClick={() => { setSelectedRecord(row); setIsEditing(false); }} className="p-2.5 bg-white hover:bg-indigo-50 rounded-lg shadow-sm border border-slate-200 transition-all hover:border-indigo-300 hover:shadow-md active:scale-95" type="button"><Edit2 className="w-4 h-4 text-slate-600 hover:text-indigo-700" /></button></td>
+                                                        <td className="px-6 py-4 text-right"><button id={index === 0 ? 'tour-record-open-btn' : undefined} onClick={() => { setSelectedRecord(row); setIsEditing(false); }} className="p-2.5 bg-white hover:bg-indigo-50 rounded-lg shadow-sm border border-slate-200 transition-all hover:border-indigo-300 hover:shadow-md active:scale-95" type="button"><Edit2 className="w-4 h-4 text-slate-600 hover:text-indigo-700" /></button></td>
                                                     </tr>
                                                 );
                                             })}
@@ -1050,18 +1527,51 @@ export default function App() {
                                 <div className="bg-green-600 text-white p-3 flex justify-between shadow-sm z-10 shrink-0"><div className="flex items-center gap-2"><TableProperties className="w-5 h-5 text-green-100" /><h2 className="font-bold">Planilha editavel</h2></div></div>
                                 <div className="overflow-auto flex-1 bg-slate-100 p-2">
                                     <table className="w-full text-left text-sm border-collapse bg-white shadow-sm ring-1 ring-slate-200">
-                                        <thead className="bg-slate-100 border-b-2 border-slate-300 text-slate-700 font-bold text-xs sticky top-0 z-10 shadow-sm">
-                                            <tr><th className="px-3 py-2 border-r min-w-[120px]">Status</th><th className="px-3 py-2 border-r min-w-[200px]">Profissional Saida</th><th className="px-3 py-2 border-r bg-green-50 min-w-[200px]">Candidato Cobertura</th><th className="px-3 py-2 border-r bg-green-50 min-w-[120px]">Telefone</th><th className="px-3 py-2 border-r min-w-[150px]">Municipio</th><th className="px-3 py-2 min-w-[200px]">Observacoes</th></tr>
+                                        <thead id="tour-sheets-head" className="bg-slate-100 border-b-2 border-slate-300 text-slate-700 font-bold text-xs sticky top-0 z-10 shadow-sm">
+                                            <tr>
+                                                {sheetsColumns.map((column, index) => {
+                                                    const isLast = index === sheetsColumns.length - 1;
+                                                    const isCandidateBlock = ['Candidato', 'Contato Candidato'].includes(column);
+                                                    return (
+                                                        <th
+                                                            key={column}
+                                                            className={`px-3 py-2 min-w-[180px] ${isLast ? '' : 'border-r'} ${isCandidateBlock ? 'bg-green-50' : ''}`}
+                                                        >
+                                                            {column}
+                                                        </th>
+                                                    );
+                                                })}
+                                            </tr>
                                         </thead>
                                         <tbody key={`sheets-${tableAnimationKey}`} className="divide-y divide-slate-200 font-medium">
-                                            {filteredData.slice(0, 50).map((row, i) => (
+                                            {filteredData.map((row, i) => (
                                                 <tr key={row._id} className={`hover:bg-blue-50/50 transition-colors anim-cascade ${row._isInvalid ? 'bg-red-50' : ''}`} style={{ animationDelay: `${i * 15}ms` }}>
-                                                    <td className="border-r p-0"><select value={row.Status || ''} onChange={(e) => handleInlineEdit(row._id, 'Status', e.target.value)} className="w-full h-full px-3 py-2 appearance-none cursor-pointer focus:bg-blue-100 bg-transparent transition-colors"><option value="ABERTA">ABERTA</option><option value="FECHADA">FECHADA</option><option value="ENCAMINHADA">ENCAMINHADA</option><option value="CANCELADA">CANCELADA</option><option value="PAUSADA">PAUSADA</option></select></td>
-                                                    <td className={`border-r p-0 transition-colors ${row._isInvalid && !row['Nome Subs'] ? 'ring-2 ring-inset ring-red-500 bg-red-50' : ''}`}><input type="text" value={row['Nome Subs'] || ''} onChange={(e) => handleInlineEdit(row._id, 'Nome Subs', e.target.value)} className="w-full h-full px-3 py-2 focus:bg-blue-100 bg-transparent transition-colors placeholder:text-red-300" placeholder="Obrigatorio" /></td>
-                                                    <td className="border-r p-0 bg-green-50/30"><input type="text" value={row.Candidato || ''} onChange={(e) => handleInlineEdit(row._id, 'Candidato', e.target.value)} className="w-full h-full px-3 py-2 focus:bg-green-100 font-bold text-green-900 bg-transparent transition-colors placeholder:text-green-300" placeholder="Sem Candidato" /></td>
-                                                    <td className="border-r p-0 bg-green-50/30"><input type="text" value={row['Contato Candidato'] || ''} onChange={(e) => handleInlineEdit(row._id, 'Contato Candidato', e.target.value)} className="w-full h-full px-3 py-2 focus:bg-green-100 bg-transparent transition-colors" /></td>
-                                                    <td className="border-r p-0"><input type="text" value={row['NRE / MUNICIPIO'] || ''} onChange={(e) => handleInlineEdit(row._id, 'NRE / MUNICIPIO', e.target.value)} className="w-full h-full px-3 py-2 focus:bg-blue-100 bg-transparent transition-colors" /></td>
-                                                    <td className="p-0"><input type="text" value={row['OBS:'] || ''} onChange={(e) => handleInlineEdit(row._id, 'OBS:', e.target.value)} className="w-full h-full px-3 py-2 focus:bg-blue-100 bg-transparent text-xs transition-colors" placeholder="Adicionar nota..." /></td>
+                                                    {sheetsColumns.map((column, index) => {
+                                                        const isLast = index === sheetsColumns.length - 1;
+                                                        const isCandidateBlock = ['Candidato', 'Contato Candidato'].includes(column);
+                                                        const isStatus = normalizeCredentialText(column) === 'status';
+                                                        const isRequiredName = normalizeCredentialText(column) === normalizeCredentialText('Nome Subs');
+                                                        const rawValue = row[column];
+                                                        const value = rawValue === undefined || rawValue === null ? '' : String(rawValue);
+
+                                                        return (
+                                                            <td key={`${row._id}-${column}`} className={`${isLast ? '' : 'border-r'} p-0 ${isCandidateBlock ? 'bg-green-50/30' : ''} ${row._isInvalid && isRequiredName && !value.trim() ? 'ring-2 ring-inset ring-red-500 bg-red-50' : ''}`}>
+                                                                {isStatus ? (
+                                                                    <select value={value} onChange={(e) => handleInlineEdit(row._id, column, e.target.value)} className="w-full h-full px-3 py-2 appearance-none cursor-pointer focus:bg-blue-100 bg-transparent transition-colors">
+                                                                        <option value="ABERTA">ABERTA</option><option value="FECHADA">FECHADA</option><option value="ENCAMINHADA">ENCAMINHADA</option><option value="CANCELADA">CANCELADA</option><option value="PAUSADA">PAUSADA</option>
+                                                                    </select>
+                                                                ) : (
+                                                                    <input
+                                                                        type="text"
+                                                                        value={value}
+                                                                        onChange={(e) => handleInlineEdit(row._id, column, e.target.value)}
+                                                                        className={`w-full h-full px-3 py-2 bg-transparent transition-colors ${isCandidateBlock ? 'focus:bg-green-100' : 'focus:bg-blue-100'} ${normalizeCredentialText(column) === normalizeCredentialText('OBS:') ? 'text-xs' : ''} ${normalizeCredentialText(column) === normalizeCredentialText('Candidato') ? 'font-bold text-green-900 placeholder:text-green-300' : ''} ${row._isInvalid && isRequiredName ? 'placeholder:text-red-300' : ''}`}
+                                                                        placeholder={row._isInvalid && isRequiredName ? 'Obrigatorio' : ''}
+                                                                    />
+                                                                )}
+                                                            </td>
+                                                        );
+                                                    })}
                                                 </tr>
                                             ))}
                                         </tbody>
@@ -1078,6 +1588,7 @@ export default function App() {
                     key={tutorialSection}
                     section={tutorialSection}
                     steps={tutorialSteps}
+                    onStepChange={setTutorialActiveStep}
                     onComplete={(dontShow) => handleTutorialComplete(tutorialSection, dontShow)}
                 />
             )}
@@ -1097,7 +1608,7 @@ export default function App() {
 
             {isChartModalOpen && (
                 <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in duration-200">
-                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8 animate-in zoom-in-95 duration-300">
+                    <div id="tour-chart-modal" className="bg-white rounded-3xl shadow-2xl w-full max-w-md p-8 animate-in zoom-in-95 duration-300">
                         <h3 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2 border-b pb-3"><BarChart2 className="w-6 h-6 text-indigo-600" /> Montador de Graficos</h3>
                         <div className="space-y-5">
                             <div><label className="text-xs font-bold text-slate-500 uppercase">Titulo Visual</label><input type="text" value={newChartData.title} onChange={(e) => setNewChartData({ ...newChartData, title: e.target.value })} className="w-full mt-1.5 px-4 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500 transition-all shadow-sm" /></div>
@@ -1117,13 +1628,13 @@ export default function App() {
 
             {selectedRecord && (
                 <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-[90] animate-in fade-in duration-200">
-                    <div className="bg-white rounded-3xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-300">
-                        <div className="px-8 py-5 border-b flex justify-between bg-white items-center"><h3 className="text-xl font-bold text-slate-800 flex gap-2 items-center"><Briefcase className="w-6 h-6 text-indigo-600" />{isEditing ? 'Configurando Matriz' : 'Ficha Completa'}</h3><div className="flex gap-2 items-center">{!isEditing ? <button onClick={handleEditClick} className="flex items-center gap-1.5 px-4 py-2 bg-indigo-50 text-indigo-700 font-bold rounded-xl text-sm hover:bg-indigo-100 transition-colors" type="button"><Edit2 className="w-4 h-4" /> Editar Todos os Campos</button> : <button onClick={handleSaveEdit} className="flex items-center gap-1.5 px-5 py-2 bg-green-600 text-white font-bold rounded-xl text-sm hover:bg-green-700 shadow-md transition-all active:scale-95" type="button"><Save className="w-4 h-4" /> Salvar Edicoes</button>}<button onClick={() => setSelectedRecord(null)} className="p-2 text-slate-400 hover:bg-slate-100 rounded-xl ml-2 transition-colors" type="button"><X className="w-5 h-5" /></button></div></div>
+                    <div id="tour-record-modal" className="bg-white rounded-3xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-300">
+                        <div className="px-8 py-5 border-b flex justify-between bg-white items-center"><h3 className="text-xl font-bold text-slate-800 flex gap-2 items-center"><Briefcase className="w-6 h-6 text-indigo-600" />{isEditing ? 'Configurando Matriz' : 'Ficha Completa'}</h3><div className="flex gap-2 items-center">{!isEditing ? <button id="tour-record-edit-btn" onClick={handleEditClick} className="flex items-center gap-1.5 px-4 py-2 bg-indigo-50 text-indigo-700 font-bold rounded-xl text-sm hover:bg-indigo-100 transition-colors" type="button"><Edit2 className="w-4 h-4" /> Editar Todos os Campos</button> : <button id="tour-record-save-btn" onClick={handleSaveEdit} className="flex items-center gap-1.5 px-5 py-2 bg-green-600 text-white font-bold rounded-xl text-sm hover:bg-green-700 shadow-md transition-all active:scale-95" type="button"><Save className="w-4 h-4" /> Salvar Edicoes</button>}<button onClick={() => setSelectedRecord(null)} className="p-2 text-slate-400 hover:bg-slate-100 rounded-xl ml-2 transition-colors" type="button"><X className="w-5 h-5" /></button></div></div>
                         <div className="p-8 overflow-y-auto flex-1 bg-slate-50 relative">
                             {!isEditing ? (
-                                <div className="space-y-6"><div className="grid grid-cols-1 md:grid-cols-2 gap-8"><div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-4"><h4 className="text-xs font-bold text-slate-400 uppercase border-b pb-2">Profissional</h4><p className="text-sm"><b>Nome:</b> {selectedRecord['Nome Subs']}</p><p className="text-sm"><b>Cargo:</b> {selectedRecord.CARGO}</p></div><div className="bg-indigo-50 p-6 rounded-2xl border border-indigo-100 shadow-sm space-y-4"><h4 className="text-xs font-bold text-slate-400 uppercase border-b border-indigo-200 pb-2">Candidato e Cobertura</h4><p className="text-sm"><b>Status:</b> {selectedRecord.Situacao}</p><p className="text-sm"><b>Candidato:</b> {selectedRecord.Candidato}</p></div></div></div>
+                                <div className="space-y-6"><div className="grid grid-cols-1 md:grid-cols-2 gap-8"><div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200 space-y-4"><h4 className="text-xs font-bold text-slate-400 uppercase border-b pb-2">Profissional</h4><p className="text-sm"><b>Nome:</b> {selectedRecord['Nome Subs'] || 'Nao informado'}</p><p className="text-sm"><b>Cargo:</b> {selectedRecord.CARGO || 'Nao informado'}</p><p className="text-sm"><b>Municipio:</b> {selectedRecord['NRE / MUNICIPIO'] || 'Nao informado'}</p><p className="text-sm"><b>Prazo:</b> {getPrazoValue(selectedRecord) || 'Sem prazo'}</p></div><div className="bg-indigo-50 p-6 rounded-2xl border border-indigo-100 shadow-sm space-y-4"><h4 className="text-xs font-bold text-slate-400 uppercase border-b border-indigo-200 pb-2">Candidato e Cobertura</h4><p className="text-sm"><b>Status:</b> {selectedRecord.Status || 'Nao informado'}</p><p className="text-sm"><b>Candidato:</b> {selectedRecord.Candidato || 'SEM COBERTURA'}</p><p className="text-sm"><b>Contato:</b> {selectedRecord['Contato Candidato'] || 'Sem contato'}</p><p className="text-sm"><b>Observacoes:</b> {selectedRecord['OBS:'] || 'Sem observacoes'}</p></div></div></div>
                             ) : (
-                                <div className="space-y-6 bg-white p-8 rounded-2xl border shadow-inner"><div className="grid grid-cols-1 md:grid-cols-2 gap-6"><div className="space-y-1.5"><label className="text-xs font-bold text-slate-500 uppercase">Status</label><select value={editFormData.Status || ''} onChange={(e) => setEditFormData({ ...editFormData, Status: e.target.value })} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-indigo-500 bg-slate-50"><option value="ABERTA">ABERTA</option><option value="FECHADA">FECHADA</option><option value="ENCAMINHADA">ENCAMINHADA</option><option value="CANCELADA">CANCELADA</option><option value="PAUSADA">PAUSADA</option></select></div><div className="space-y-1.5"><label className="text-xs font-bold text-slate-500 uppercase">Candidato</label><input type="text" value={editFormData.Candidato || ''} onChange={(e) => setEditFormData({ ...editFormData, Candidato: e.target.value })} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-indigo-500 bg-slate-50" /></div></div></div>
+                                <div id="tour-record-edit-fields" className="space-y-6 bg-white p-8 rounded-2xl border shadow-inner"><div className="grid grid-cols-1 md:grid-cols-2 gap-6"><div className="space-y-1.5"><label className="text-xs font-bold text-slate-500 uppercase">Status</label><select value={editFormData.Status || ''} onChange={(e) => setEditFormData({ ...editFormData, Status: e.target.value })} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-indigo-500 bg-slate-50"><option value="ABERTA">ABERTA</option><option value="FECHADA">FECHADA</option><option value="ENCAMINHADA">ENCAMINHADA</option><option value="CANCELADA">CANCELADA</option><option value="PAUSADA">PAUSADA</option></select></div><div className="space-y-1.5"><label className="text-xs font-bold text-slate-500 uppercase">Profissional</label><input type="text" value={editFormData['Nome Subs'] || ''} onChange={(e) => setEditFormData({ ...editFormData, 'Nome Subs': e.target.value })} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-indigo-500 bg-slate-50" /></div><div className="space-y-1.5"><label className="text-xs font-bold text-slate-500 uppercase">Cargo</label><input type="text" value={editFormData.CARGO || ''} onChange={(e) => setEditFormData({ ...editFormData, CARGO: e.target.value })} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-indigo-500 bg-slate-50" /></div><div className="space-y-1.5"><label className="text-xs font-bold text-slate-500 uppercase">Municipio</label><input type="text" value={editFormData['NRE / MUNICIPIO'] || ''} onChange={(e) => setEditFormData({ ...editFormData, 'NRE / MUNICIPIO': e.target.value })} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-indigo-500 bg-slate-50" /></div><div className="space-y-1.5"><label className="text-xs font-bold text-slate-500 uppercase">Candidato</label><input type="text" value={editFormData.Candidato || ''} onChange={(e) => setEditFormData({ ...editFormData, Candidato: e.target.value })} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-indigo-500 bg-slate-50" /></div><div className="space-y-1.5"><label className="text-xs font-bold text-slate-500 uppercase">Contato</label><input type="text" value={editFormData['Contato Candidato'] || ''} onChange={(e) => setEditFormData({ ...editFormData, 'Contato Candidato': e.target.value })} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-indigo-500 bg-slate-50" /></div><div className="space-y-1.5"><label className="text-xs font-bold text-slate-500 uppercase">Prazo</label><input type="text" value={editFormData[editPrazoFieldKey] || ''} onChange={(e) => setEditFormData({ ...editFormData, [editPrazoFieldKey]: e.target.value })} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-indigo-500 bg-slate-50" /></div><div className="space-y-1.5 md:col-span-2"><label className="text-xs font-bold text-slate-500 uppercase">Observacoes</label><input type="text" value={editFormData['OBS:'] || ''} onChange={(e) => setEditFormData({ ...editFormData, 'OBS:': e.target.value })} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-indigo-500 bg-slate-50" placeholder="Adicionar nota..." /></div></div></div>
                             )}
                         </div>
                     </div>
