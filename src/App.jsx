@@ -31,7 +31,6 @@ const AUTH_DB_SHEET_NAME = 'USUARIOS';
 const AUTH_DB_SECRET = 'controle-admissoes-auth-db-v1';
 const GRID_PAGE_SIZE = 200;
 const SHEETS_PAGE_SIZE = 120;
-const SHEET_FILTER_OPTIONS_LIMIT = 300;
 const REQUIRED_FIELDS = ['Nome Subs', 'Status'];
 
 const encodeBase64 = (arrayBuffer) => {
@@ -298,14 +297,16 @@ const DEFAULT_TUTORIAL_PROGRESS = Object.freeze({
     TABELA: false,
     DASHBOARD: false,
     SHEETS: false,
-    NEW_FEATURES: false,
+    NEW_FEATURES_TABLE: false,
+    NEW_FEATURES_SHEETS: false,
 });
 
 const normalizeTutorialProgress = (value) => ({
     TABELA: Boolean(value?.TABELA),
     DASHBOARD: Boolean(value?.DASHBOARD),
     SHEETS: Boolean(value?.SHEETS),
-    NEW_FEATURES: Boolean(value?.NEW_FEATURES),
+    NEW_FEATURES_TABLE: Boolean(value?.NEW_FEATURES_TABLE),
+    NEW_FEATURES_SHEETS: Boolean(value?.NEW_FEATURES_SHEETS),
 });
 
 const TUTORIAL_STEPS = {
@@ -427,7 +428,7 @@ const TUTORIAL_STEPS = {
             icon: <Check className="w-8 h-8 text-emerald-500" />,
         },
     ],
-    NEW_FEATURES: [
+    NEW_FEATURES_TABLE: [
         {
             id: 'new-features-quick-add',
             target: 'tour-quick-add-btn',
@@ -439,14 +440,16 @@ const TUTORIAL_STEPS = {
             id: 'new-features-quick-add-modal',
             target: 'tour-quick-add-modal',
             title: 'Modal de cadastro',
-            desc: 'Neste modal voce cadastra campos principais e, se precisar, expande para preencher todos os campos da planilha.',
+            desc: 'Neste modal voce cadastra todos os campos obrigatorios e complementares em um formulario unico.',
             icon: <Edit2 className="w-8 h-8 text-indigo-500" />,
         },
+    ],
+    NEW_FEATURES_SHEETS: [
         {
             id: 'new-features-dynamic-filters',
             target: 'tour-sheets-dynamic-filters',
             title: 'Filtros dinamicos',
-            desc: 'Agora cada coluna aceita filtro por lista e por texto. Assim voce encontra registros mesmo em bases muito grandes.',
+            desc: 'Aqui voce filtra a planilha com busca global e um filtro rapido por coluna, sem poluicao visual.',
             icon: <Sliders className="w-8 h-8 text-green-600" />,
         },
     ],
@@ -933,9 +936,8 @@ export default function App() {
     const [filters, setFilters] = useState({ status: 'TODOS', municipio: 'TODOS', motivo: 'TODOS', urgencia: 'TODOS' });
     const [showErrorsOnly, setShowErrorsOnly] = useState(false);
     const [sheetSearchTerm, setSheetSearchTerm] = useState('');
-    const [sheetFilters, setSheetFilters] = useState({});
-    const [sheetTextFilters, setSheetTextFilters] = useState({});
-    const [sheetShowFiltersPanel, setSheetShowFiltersPanel] = useState(false);
+    const [sheetFilterColumn, setSheetFilterColumn] = useState('TODOS');
+    const [sheetFilterTerm, setSheetFilterTerm] = useState('');
     const [sheetPage, setSheetPage] = useState(1);
     const [isQuickAddModalOpen, setIsQuickAddModalOpen] = useState(false);
     const [quickAddData, setQuickAddData] = useState({});
@@ -1076,17 +1078,30 @@ export default function App() {
     }, [activeTab, data.length, isAuthenticated, accountTutorialProgress, sessionTutorialProgress, showTutorial, showWelcome]);
 
     useEffect(() => {
-        if (showWelcome || !isAuthenticated || data.length === 0 || showTutorial || hasCompletedTutorialSection('NEW_FEATURES')) {
+        if (showWelcome || !isAuthenticated || data.length === 0 || showTutorial || activeTab !== 'TABELA' || hasCompletedTutorialSection('NEW_FEATURES_TABLE')) {
             return undefined;
         }
 
         const timer = setTimeout(() => {
-            setTutorialSection('NEW_FEATURES');
+            setTutorialSection('NEW_FEATURES_TABLE');
             setShowTutorial(true);
         }, 350);
 
         return () => clearTimeout(timer);
-    }, [data.length, isAuthenticated, accountTutorialProgress, sessionTutorialProgress, showTutorial, showWelcome]);
+    }, [activeTab, data.length, isAuthenticated, accountTutorialProgress, sessionTutorialProgress, showTutorial, showWelcome]);
+
+    useEffect(() => {
+        if (showWelcome || !isAuthenticated || data.length === 0 || showTutorial || activeTab !== 'SHEETS' || hasCompletedTutorialSection('NEW_FEATURES_SHEETS')) {
+            return undefined;
+        }
+
+        const timer = setTimeout(() => {
+            setTutorialSection('NEW_FEATURES_SHEETS');
+            setShowTutorial(true);
+        }, 350);
+
+        return () => clearTimeout(timer);
+    }, [activeTab, data.length, isAuthenticated, accountTutorialProgress, sessionTutorialProgress, showTutorial, showWelcome]);
 
     useEffect(() => {
         if (!pendingTutorialSection || activeTab !== pendingTutorialSection || showTutorial || showWelcome) {
@@ -1496,26 +1511,6 @@ export default function App() {
         return SHEETS_PRIORITY_COLUMNS;
     }, [selectedRecord, sheetsColumns]);
 
-    const sheetColumnOptions = useMemo(() => {
-        const optionsByColumn = {};
-
-        sheetsColumns.forEach((column) => {
-            const uniqueValues = new Set();
-
-            for (let i = 0; i < filteredData.length; i += 1) {
-                const raw = filteredData[i]?.[column];
-                const normalized = String(raw || '').trim();
-                if (!normalized) continue;
-                uniqueValues.add(normalized);
-                if (uniqueValues.size >= SHEET_FILTER_OPTIONS_LIMIT) break;
-            }
-
-            optionsByColumn[column] = Array.from(uniqueValues).sort((a, b) => a.localeCompare(b));
-        });
-
-        return optionsByColumn;
-    }, [filteredData, sheetsColumns]);
-
     const sheetFilteredData = useMemo(() => {
         let result = filteredData;
 
@@ -1529,26 +1524,14 @@ export default function App() {
             );
         }
 
-        // Aplicar filtros de dropdown
-        Object.entries(sheetFilters).forEach(([column, value]) => {
-            if (value && value !== 'TODOS' && value !== '__BLANK__' && value !== '__FILLED__') {
-                result = result.filter(row => String(row[column] || '').trim() === value);
-            } else if (value === '__BLANK__') {
-                result = result.filter(row => !row[column] || String(row[column]).trim() === '');
-            } else if (value === '__FILLED__') {
-                result = result.filter(row => row[column] && String(row[column]).trim() !== '');
-            }
-        });
-
-        // Aplicar filtros de texto por coluna (contém)
-        Object.entries(sheetTextFilters).forEach(([column, value]) => {
-            const term = String(value || '').trim().toLowerCase();
-            if (!term) return;
-            result = result.filter((row) => String(row[column] || '').toLowerCase().includes(term));
-        });
+        // Aplicar filtro simples por coluna selecionada
+        const normalizedTerm = String(sheetFilterTerm || '').trim().toLowerCase();
+        if (sheetFilterColumn !== 'TODOS' && normalizedTerm) {
+            result = result.filter((row) => String(row[sheetFilterColumn] || '').toLowerCase().includes(normalizedTerm));
+        }
 
         return result;
-    }, [filteredData, sheetSearchTerm, sheetFilters, sheetTextFilters]);
+    }, [filteredData, sheetFilterColumn, sheetFilterTerm, sheetSearchTerm]);
 
     const gridTotalPages = useMemo(() => Math.max(1, Math.ceil(filteredData.length / GRID_PAGE_SIZE)), [filteredData.length]);
     const gridPagedData = useMemo(() => {
@@ -1570,7 +1553,7 @@ export default function App() {
 
     useEffect(() => {
         setSheetPage(1);
-    }, [sheetSearchTerm, sheetFilters, sheetTextFilters]);
+    }, [sheetFilterColumn, sheetFilterTerm, sheetSearchTerm]);
 
     useEffect(() => {
         if (gridPage > gridTotalPages) setGridPage(gridTotalPages);
@@ -1614,15 +1597,10 @@ export default function App() {
     }, [showTutorial, tutorialActiveStep, tutorialSection]);
 
     useEffect(() => {
-        if (!showTutorial || tutorialSection !== 'NEW_FEATURES') return;
+        if (!showTutorial || tutorialSection !== 'NEW_FEATURES_TABLE') return;
 
         const currentStepId = tutorialActiveStep?.id;
         setIsQuickAddModalOpen(currentStepId === 'new-features-quick-add-modal');
-
-        if (currentStepId === 'new-features-dynamic-filters') {
-            if (activeTab !== 'SHEETS') setActiveTab('SHEETS');
-            setSheetShowFiltersPanel(true);
-        }
     }, [showTutorial, tutorialActiveStep, tutorialSection]);
 
     useEffect(() => {
@@ -1825,78 +1803,44 @@ export default function App() {
 
                                 {/* Barra de Filtros da Planilha */}
                                 <div className="bg-green-50 border-b border-green-200 p-3 z-10 shrink-0">
-                                    <div className="flex gap-2 items-center mb-3">
-                                        <Search className="w-4 h-4 text-slate-400" />
+                                    <div id="tour-sheets-dynamic-filters" className="grid grid-cols-1 md:grid-cols-4 gap-2 items-center mb-2">
+                                        <div className="relative">
+                                            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                                            <input
+                                                ref={sheetSearchInputRef}
+                                                type="text"
+                                                placeholder="Buscar em todas as colunas..."
+                                                value={sheetSearchTerm}
+                                                onChange={(e) => setSheetSearchTerm(e.target.value)}
+                                                className="w-full pl-9 pr-3 py-2 border border-green-300 rounded-lg text-sm focus:ring-2 focus:ring-green-500 focus:border-transparent bg-white"
+                                            />
+                                        </div>
+                                        <select
+                                            value={sheetFilterColumn}
+                                            onChange={(e) => setSheetFilterColumn(e.target.value)}
+                                            className="w-full px-3 py-2 border border-green-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-green-500"
+                                        >
+                                            <option value="TODOS">Filtrar por coluna...</option>
+                                            {sheetsColumns.map((column) => <option key={`sheet-filter-col-${column}`} value={column}>{column}</option>)}
+                                        </select>
                                         <input
-                                            ref={sheetSearchInputRef}
                                             type="text"
-                                            placeholder="Buscar em todas as colunas..."
-                                            value={sheetSearchTerm}
-                                            onChange={(e) => setSheetSearchTerm(e.target.value)}
-                                            className="flex-1 px-3 py-1.5 border border-green-300 rounded-lg text-sm focus:ring-2 focus:ring-green-500 focus:border-transparent bg-white"
+                                            value={sheetFilterTerm}
+                                            onChange={(e) => setSheetFilterTerm(e.target.value)}
+                                            placeholder="Termo na coluna"
+                                            className="w-full px-3 py-2 border border-green-300 rounded-lg text-sm bg-white focus:ring-2 focus:ring-green-500"
                                         />
                                         <button
-                                            onClick={() => setSheetShowFiltersPanel(!sheetShowFiltersPanel)}
-                                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${sheetShowFiltersPanel ? 'bg-green-600 text-white shadow-sm' : 'bg-white text-slate-700 hover:bg-green-100'
-                                                }`}
+                                            onClick={() => { setSheetSearchTerm(''); setSheetFilterColumn('TODOS'); setSheetFilterTerm(''); }}
+                                            disabled={!sheetSearchTerm && !(sheetFilterColumn !== 'TODOS' && sheetFilterTerm.trim())}
+                                            className="px-3 py-2 bg-red-100 text-red-700 rounded-lg text-sm font-medium hover:bg-red-200 transition-all disabled:opacity-40 disabled:hover:bg-red-100"
                                             type="button"
                                         >
-                                            <Sliders className="w-4 h-4" /> Filtros
+                                            Limpar
                                         </button>
-                                        {(sheetSearchTerm || Object.keys(sheetFilters).length > 0 || Object.keys(sheetTextFilters).some((key) => String(sheetTextFilters[key] || '').trim() !== '')) && (
-                                            <button
-                                                onClick={() => { setSheetSearchTerm(''); setSheetFilters({}); setSheetTextFilters({}); }}
-                                                className="px-3 py-1.5 bg-red-100 text-red-700 rounded-lg text-sm font-medium hover:bg-red-200 transition-all"
-                                                type="button"
-                                            >
-                                                <X className="w-4 h-4" />
-                                            </button>
-                                        )}
                                     </div>
 
-                                    {sheetShowFiltersPanel && (
-                                        <div id="tour-sheets-dynamic-filters" className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 pt-3 border-t border-green-200">
-                                            {sheetsColumns.map((column) => {
-                                                const uniqueValues = sheetColumnOptions[column] || [];
-                                                return (
-                                                    <div key={column} className="bg-white rounded-lg border border-green-200 p-2">
-                                                        <label className="text-xs font-bold text-slate-600 mb-1 block">{column}</label>
-                                                        <select
-                                                            value={sheetFilters[column] || 'TODOS'}
-                                                            onChange={(e) => {
-                                                                if (e.target.value === 'TODOS') {
-                                                                    setSheetFilters(prev => {
-                                                                        const newFilters = { ...prev };
-                                                                        delete newFilters[column];
-                                                                        return newFilters;
-                                                                    });
-                                                                } else {
-                                                                    setSheetFilters(prev => ({ ...prev, [column]: e.target.value }));
-                                                                }
-                                                            }}
-                                                            className="w-full px-2 py-1 border border-slate-300 rounded text-xs bg-white focus:ring-1 focus:ring-green-500"
-                                                        >
-                                                            <option value="TODOS">Todos</option>
-                                                            <option value="__BLANK__">Vazio</option>
-                                                            <option value="__FILLED__">Preenchido</option>
-                                                            <optgroup label="Valores">
-                                                                {uniqueValues.map(val => (
-                                                                    <option key={val} value={val}>{val.substring(0, 30)}</option>
-                                                                ))}
-                                                            </optgroup>
-                                                        </select>
-                                                        <input
-                                                            type="text"
-                                                            value={sheetTextFilters[column] || ''}
-                                                            onChange={(e) => setSheetTextFilters((prev) => ({ ...prev, [column]: e.target.value }))}
-                                                            placeholder="Contém..."
-                                                            className="mt-2 w-full px-2 py-1 border border-slate-300 rounded text-xs bg-white focus:ring-1 focus:ring-green-500"
-                                                        />
-                                                    </div>
-                                                );
-                                            })}
-                                        </div>
-                                    )}
+                                    <p className="text-xs text-slate-600">Busca rapida: use a barra global ou escolha uma coluna + termo.</p>
 
                                     <div className="mt-3 flex items-center justify-end">
                                         <button onClick={openQuickAddModal} className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 shadow-sm hover:shadow-md transition-all" type="button"><PlusCircle className="w-5 h-5" /> Novo Cadastro (C)</button>
