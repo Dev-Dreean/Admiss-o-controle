@@ -1,10 +1,10 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useRef, memo } from 'react';
 import {
     UploadCloud, FileSpreadsheet, AlertCircle, Users, Search,
     X, ChevronRight, Briefcase, Download, Edit2, Save,
     LayoutDashboard, ListTodo, TableProperties, PlusCircle,
     BarChart2, PieChart as PieChartIcon, Trash2,
-    Undo2, Redo2, Check, ChevronLeft, Map, LogOut
+    Undo2, Redo2, Check, ChevronLeft, Map, LogOut, Sliders
 } from 'lucide-react';
 import {
     PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer
@@ -896,6 +896,9 @@ export default function App() {
     const [searchTerm, setSearchTerm] = useState('');
     const [filters, setFilters] = useState({ status: 'TODOS', municipio: 'TODOS', motivo: 'TODOS', urgencia: 'TODOS' });
     const [showErrorsOnly, setShowErrorsOnly] = useState(false);
+    const [sheetSearchTerm, setSheetSearchTerm] = useState('');
+    const [sheetFilters, setSheetFilters] = useState({});
+    const [sheetShowFiltersPanel, setSheetShowFiltersPanel] = useState(false);
 
     const [selectedRecord, setSelectedRecord] = useState(null);
     const [isEditing, setIsEditing] = useState(false);
@@ -1339,6 +1342,33 @@ export default function App() {
         return [...prioritized, ...others];
     }, [filteredData]);
 
+    const sheetFilteredData = useMemo(() => {
+        let result = filteredData;
+
+        // Aplicar busca por texto em todas as colunas
+        if (sheetSearchTerm.trim()) {
+            const searchLower = sheetSearchTerm.toLowerCase();
+            result = result.filter(row =>
+                Object.values(row).some(val =>
+                    String(val || '').toLowerCase().includes(searchLower)
+                )
+            );
+        }
+
+        // Aplicar filtros de dropdown
+        Object.entries(sheetFilters).forEach(([column, value]) => {
+            if (value && value !== 'TODOS' && value !== '__BLANK__' && value !== '__FILLED__') {
+                result = result.filter(row => String(row[column] || '').trim() === value);
+            } else if (value === '__BLANK__') {
+                result = result.filter(row => !row[column] || String(row[column]).trim() === '');
+            } else if (value === '__FILLED__') {
+                result = result.filter(row => row[column] && String(row[column]).trim() !== '');
+            }
+        });
+
+        return result;
+    }, [filteredData, sheetSearchTerm, sheetFilters]);
+
     useEffect(() => {
         if (!showTutorial || tutorialSection !== 'TABELA') return;
 
@@ -1473,7 +1503,7 @@ export default function App() {
                                             <tr><th id="tour-table-col-status" className="px-6 py-4">Status Rapido</th><th id="tour-table-col-vaga" className="px-6 py-4">Vaga</th><th id="tour-table-col-candidato" className="px-6 py-4">Candidato</th><th id="tour-table-col-prazo" className="px-6 py-4">Prazo</th><th id="tour-table-col-ficha" className="px-6 py-4 text-right">Ficha</th></tr>
                                         </thead>
                                         <tbody id="tour-table" key={tableAnimationKey} className="divide-y divide-slate-200/50">
-                                            {filteredData.slice(0, 100).map((row, index) => {
+                                            {filteredData.slice(0, 200).map((row, index) => {
                                                 const status = safeGet(row, 'Status');
                                                 const candidato = row.Candidato || 'SEM COBERTURA';
                                                 const prazoValue = getPrazoValue(row);
@@ -1524,7 +1554,83 @@ export default function App() {
 
                         {activeTab === 'SHEETS' && data.length > 0 && (
                             <div id="tour-sheets-table" className="bg-white shadow-xl border border-green-300 rounded-lg flex flex-col flex-1 min-h-[600px] overflow-hidden animate-in fade-in zoom-in-[0.98] duration-500">
-                                <div className="bg-green-600 text-white p-3 flex justify-between shadow-sm z-10 shrink-0"><div className="flex items-center gap-2"><TableProperties className="w-5 h-5 text-green-100" /><h2 className="font-bold">Planilha editavel</h2></div></div>
+                                <div className="bg-green-600 text-white p-3 flex justify-between items-center shadow-sm z-10 shrink-0">
+                                    <div className="flex items-center gap-2"><TableProperties className="w-5 h-5 text-green-100" /><h2 className="font-bold">Planilha editável</h2></div>
+                                    <div className="text-sm font-semibold">Exibindo {sheetFilteredData.length} de {filteredData.length} registros</div>
+                                </div>
+
+                                {/* Barra de Filtros da Planilha */}
+                                <div className="bg-green-50 border-b border-green-200 p-3 z-10 shrink-0">
+                                    <div className="flex gap-2 items-center mb-3">
+                                        <Search className="w-4 h-4 text-slate-400" />
+                                        <input
+                                            type="text"
+                                            placeholder="Buscar em todas as colunas..."
+                                            value={sheetSearchTerm}
+                                            onChange={(e) => setSheetSearchTerm(e.target.value)}
+                                            className="flex-1 px-3 py-1.5 border border-green-300 rounded-lg text-sm focus:ring-2 focus:ring-green-500 focus:border-transparent bg-white"
+                                        />
+                                        <button
+                                            onClick={() => setSheetShowFiltersPanel(!sheetShowFiltersPanel)}
+                                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                                                sheetShowFiltersPanel ? 'bg-green-600 text-white shadow-sm' : 'bg-white text-slate-700 hover:bg-green-100'
+                                            }`}
+                                            type="button"
+                                        >
+                                            <Sliders className="w-4 h-4" /> Filtros
+                                        </button>
+                                        {(sheetSearchTerm || Object.keys(sheetFilters).length > 0) && (
+                                            <button
+                                                onClick={() => { setSheetSearchTerm(''); setSheetFilters({}); }}
+                                                className="px-3 py-1.5 bg-red-100 text-red-700 rounded-lg text-sm font-medium hover:bg-red-200 transition-all"
+                                                type="button"
+                                            >
+                                                <X className="w-4 h-4" />
+                                            </button>
+                                        )}
+                                    </div>
+
+                                    {sheetShowFiltersPanel && (
+                                        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2 pt-3 border-t border-green-200">
+                                            {sheetsColumns.map((column) => {
+                                                const uniqueValues = Array.from(new Set(
+                                                    filteredData.map(row => String(row[column] || '').trim()).filter(Boolean)
+                                                )).sort();
+
+                                                return (
+                                                    <div key={column}>
+                                                        <label className="text-xs font-bold text-slate-600 mb-1 block">{column}</label>
+                                                        <select
+                                                            value={sheetFilters[column] || 'TODOS'}
+                                                            onChange={(e) => {
+                                                                if (e.target.value === 'TODOS') {
+                                                                    setSheetFilters(prev => {
+                                                                        const newFilters = { ...prev };
+                                                                        delete newFilters[column];
+                                                                        return newFilters;
+                                                                    });
+                                                                } else {
+                                                                    setSheetFilters(prev => ({ ...prev, [column]: e.target.value }));
+                                                                }
+                                                            }}
+                                                            className="w-full px-2 py-1 border border-slate-300 rounded text-xs bg-white focus:ring-1 focus:ring-green-500"
+                                                        >
+                                                            <option value="TODOS">Todos</option>
+                                                            <option value="__BLANK__">Vazio</option>
+                                                            <option value="__FILLED__">Preenchido</option>
+                                                            <optgroup label="Valores">
+                                                                {uniqueValues.map(val => (
+                                                                    <option key={val} value={val}>{val.substring(0, 30)}</option>
+                                                                ))}
+                                                            </optgroup>
+                                                        </select>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+                                </div>
+
                                 <div className="overflow-auto flex-1 bg-slate-100 p-2">
                                     <table className="w-full text-left text-sm border-collapse bg-white shadow-sm ring-1 ring-slate-200">
                                         <thead id="tour-sheets-head" className="bg-slate-100 border-b-2 border-slate-300 text-slate-700 font-bold text-xs sticky top-0 z-10 shadow-sm">
@@ -1544,7 +1650,14 @@ export default function App() {
                                             </tr>
                                         </thead>
                                         <tbody key={`sheets-${tableAnimationKey}`} className="divide-y divide-slate-200 font-medium">
-                                            {filteredData.map((row, i) => (
+                                            {sheetFilteredData.length === 0 ? (
+                                                <tr>
+                                                    <td colSpan={sheetsColumns.length} className="px-4 py-8 text-center text-slate-500 font-medium">
+                                                        Nenhum registro encontrado com os filtros aplicados
+                                                    </td>
+                                                </tr>
+                                            ) : (
+                                                sheetFilteredData.map((row, i) => (
                                                 <tr key={row._id} className={`hover:bg-blue-50/50 transition-colors anim-cascade ${row._isInvalid ? 'bg-red-50' : ''}`} style={{ animationDelay: `${i * 15}ms` }}>
                                                     {sheetsColumns.map((column, index) => {
                                                         const isLast = index === sheetsColumns.length - 1;
@@ -1573,7 +1686,8 @@ export default function App() {
                                                         );
                                                     })}
                                                 </tr>
-                                            ))}
+                                                ))
+                                            )}
                                         </tbody>
                                     </table>
                                 </div>
