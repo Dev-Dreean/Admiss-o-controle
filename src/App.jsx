@@ -1802,6 +1802,16 @@ export default function App() {
         sheetsColumns.filter((column) => !hiddenSheetColumns.includes(column))
     ), [hiddenSheetColumns, sheetsColumns]);
 
+    const sheetColumnsWithActions = useMemo(() => {
+        const idx = visibleSheetColumns.findIndex((c) => normalizeCredentialText(c) === 'status');
+        if (idx >= 0) {
+            const arr = [...visibleSheetColumns];
+            arr.splice(idx, 0, '__ACTIONS__');
+            return arr;
+        }
+        return ['__ACTIONS__', ...visibleSheetColumns];
+    }, [visibleSheetColumns]);
+
     const sheetAutoColumnWidths = useMemo(() => {
         const targetColumns = visibleSheetColumns;
         if (targetColumns.length === 0) return {};
@@ -2330,15 +2340,21 @@ export default function App() {
                                 <div id="tour-sheets-horizontal-scroll" className="overflow-auto flex-1 bg-slate-100 p-2">
                                     <table className="w-max min-w-full table-fixed text-left text-xs border-collapse bg-white shadow-sm ring-1 ring-slate-200">
                                         <colgroup>
-                                            {visibleSheetColumns.map((column) => (
-                                                <col key={`sheet-col-${column}`} style={{ width: `${sheetColumnWidths[column] || 100}px` }} />
+                                            {sheetColumnsWithActions.map((column) => (
+                                                column === '__ACTIONS__'
+                                                    ? <col key="sheet-col-actions" style={{ width: '72px' }} />
+                                                    : <col key={`sheet-col-${column}`} style={{ width: `${sheetColumnWidths[column] || 100}px` }} />
                                             ))}
-                                            <col style={{ width: '72px' }} />
                                         </colgroup>
                                         <thead id="tour-sheets-head" className="bg-slate-100 border-b-2 border-slate-300 text-slate-700 font-bold text-xs sticky top-0 z-10 shadow-sm">
                                             <tr>
-                                                {visibleSheetColumns.map((column, index) => {
-                                                    const isLast = index === visibleSheetColumns.length - 1;
+                                                {sheetColumnsWithActions.map((column, index) => {
+                                                    const isLast = index === sheetColumnsWithActions.length - 1;
+                                                    if (column === '__ACTIONS__') {
+                                                        return (
+                                                            <th id="tour-sheets-actions-col" key="__ACTIONS__" className="px-2 py-2 w-[72px] text-right">Acoes</th>
+                                                        );
+                                                    }
                                                     const isCandidateBlock = ['Candidato', 'Contato Candidato'].includes(column);
                                                     return (
                                                         <th
@@ -2355,21 +2371,35 @@ export default function App() {
                                                         </th>
                                                     );
                                                 })}
-                                                <th id="tour-sheets-actions-col" className="px-2 py-2 w-[72px] text-right">Acoes</th>
                                             </tr>
                                         </thead>
                                         <tbody key={`sheets-${tableAnimationKey}`} className="divide-y divide-slate-200 font-medium">
                                             {sheetFilteredData.length === 0 ? (
                                                 <tr>
-                                                    <td colSpan={visibleSheetColumns.length + 1} className="px-4 py-8 text-center text-slate-500 font-medium">
+                                                    <td colSpan={sheetColumnsWithActions.length} className="px-4 py-8 text-center text-slate-500 font-medium">
                                                         Nenhum registro encontrado com os filtros aplicados
                                                     </td>
                                                 </tr>
                                             ) : (
                                                 sheetPagedData.map((row) => (
                                                     <tr key={row._id} className={`hover:bg-blue-50/50 transition-colors ${row._isInvalid ? 'bg-red-50' : ''}`}>
-                                                        {visibleSheetColumns.map((column, index) => {
-                                                            const isLast = index === visibleSheetColumns.length - 1;
+                                                        {sheetColumnsWithActions.map((column, index) => {
+                                                            if (column === '__ACTIONS__') {
+                                                                return (
+                                                                    <td key={`${row._id}-actions`} className="px-2 py-1 text-right border-l border-slate-200 bg-white align-middle">
+                                                                        <button
+                                                                            onClick={() => requestDeleteRecord(row)}
+                                                                            className="p-2 bg-white hover:bg-red-50 rounded-lg shadow-sm border border-slate-200 transition-all hover:border-red-300 hover:shadow-md active:scale-95"
+                                                                            type="button"
+                                                                            title="Excluir linha"
+                                                                        >
+                                                                            <Trash2 className="w-4 h-4 text-slate-600 hover:text-red-700" />
+                                                                        </button>
+                                                                    </td>
+                                                                );
+                                                            }
+
+                                                            const isLast = index === sheetColumnsWithActions.length - 1;
                                                             const isCandidateBlock = ['Candidato', 'Contato Candidato'].includes(column);
                                                             const isStatus = normalizeCredentialText(column) === 'status';
                                                             const isRequiredName = normalizeCredentialText(column) === normalizeCredentialText('Nome Subs');
@@ -2395,16 +2425,6 @@ export default function App() {
                                                                 </td>
                                                             );
                                                         })}
-                                                        <td className="px-2 py-1 text-right border-l border-slate-200 bg-white align-middle">
-                                                            <button
-                                                                onClick={() => requestDeleteRecord(row)}
-                                                                className="p-2 bg-white hover:bg-red-50 rounded-lg shadow-sm border border-slate-200 transition-all hover:border-red-300 hover:shadow-md active:scale-95"
-                                                                type="button"
-                                                                title="Excluir linha"
-                                                            >
-                                                                <Trash2 className="w-4 h-4 text-slate-600 hover:text-red-700" />
-                                                            </button>
-                                                        </td>
                                                     </tr>
                                                 ))
                                             )}
