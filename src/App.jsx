@@ -3,7 +3,7 @@ import {
     UploadCloud, FileSpreadsheet, AlertCircle, Users, Search,
     X, ChevronRight, Briefcase, Download, Edit2, Save,
     LayoutDashboard, ListTodo, TableProperties, PlusCircle,
-    BarChart2, PieChart as PieChartIcon, Trash2,
+    BarChart2, PieChart as PieChartIcon, Trash2, CheckCircle2, XCircle, Send, PauseCircle,
     Undo2, Redo2, Check, ChevronLeft, Map, LogOut, Sliders
 } from 'lucide-react';
 import {
@@ -19,6 +19,22 @@ const STATUS_COLORS = {
     ENCAMINHADA: 'bg-blue-100 text-blue-800 border-blue-300',
     CANCELADA: 'bg-gray-100 text-gray-800 border-gray-300',
     PAUSADA: 'bg-yellow-100 text-yellow-800 border-yellow-300',
+};
+
+const STATUS_ICON_MAP = {
+    ABERTA: AlertCircle,
+    FECHADA: CheckCircle2,
+    ENCAMINHADA: Send,
+    CANCELADA: XCircle,
+    PAUSADA: PauseCircle,
+};
+
+const STATUS_ACCENT = {
+    ABERTA: 'bg-red-500',
+    FECHADA: 'bg-green-500',
+    ENCAMINHADA: 'bg-blue-500',
+    CANCELADA: 'bg-slate-400',
+    PAUSADA: 'bg-yellow-400',
 };
 
 const GOOGLE_SHEETS_URL = 'https://docs.google.com/spreadsheets/d/1hmLkIX2B4rh6NDtJUXOhtjdXhddozqPs9uMTzaTeBsk/edit?usp=sharing';
@@ -455,6 +471,18 @@ const TUTORIAL_STEPS = {
             icon: <Sliders className="w-8 h-8 text-green-600" />,
         },
     ],
+};
+
+const StatusBadge = ({ status, size = 'sm' }) => {
+    const normalized = String(status || '').toUpperCase().trim();
+    const colorClass = STATUS_COLORS[normalized] || 'bg-slate-100 text-slate-600 border-slate-200';
+    const IconComponent = STATUS_ICON_MAP[normalized];
+    return (
+        <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border ${colorClass} ${size === 'sm' ? 'text-xs' : 'text-sm'} font-bold`}>
+            {IconComponent && <IconComponent className={size === 'sm' ? 'w-3 h-3' : 'w-4 h-4'} />}
+            {normalized || '—'}
+        </span>
+    );
 };
 
 const PatchNotesModal = ({ onClose, onStartTutorial }) => {
@@ -1042,6 +1070,7 @@ export default function App() {
     const [isChartModalOpen, setIsChartModalOpen] = useState(false);
     const [newChartData, setNewChartData] = useState({ title: '', type: 'bar', groupBy: 'CARGO' });
     const [isGSheetsModalOpen, setIsGSheetsModalOpen] = useState(false);
+    const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
 
     const [isCinematic, setIsCinematic] = useState(false);
 
@@ -1483,6 +1512,7 @@ export default function App() {
     };
 
     const handleEditClick = () => {
+        setDeleteConfirmOpen(false);
         const normalized = { ...selectedRecord };
         detailedColumns.forEach((column) => {
             if (normalized[column] === undefined || normalized[column] === null) normalized[column] = '';
@@ -1495,6 +1525,14 @@ export default function App() {
         setAppData((prev) => validateData((Array.isArray(prev) ? prev : []).map((item) => (item._id === editFormData._id ? editFormData : item))));
         setSelectedRecord(editFormData);
         setIsEditing(false);
+    };
+
+    const handleDeleteRecord = () => {
+        setAppData((prev) => validateData((Array.isArray(prev) ? prev : []).filter((item) => item._id !== selectedRecord._id)));
+        setSelectedRecord(null);
+        setDeleteConfirmOpen(false);
+        setIsEditing(false);
+        setEditFormData({});
     };
 
     const addCustomChart = () => {
@@ -2118,9 +2156,18 @@ export default function App() {
                                         <div key={`new-all-${column}`} className="space-y-1.5">
                                             <label className="text-xs font-bold text-slate-500 uppercase">{column} {isRequired ? <span className="text-red-600">*</span> : null}</label>
                                             {isStatus ? (
-                                                <select value={value || 'ABERTA'} onChange={(e) => setQuickAddData((prev) => ({ ...prev, [column]: e.target.value }))} className={`w-full px-3 py-2.5 border rounded-xl focus:ring-2 focus:ring-emerald-500 bg-white ${isRequired && !value ? 'border-red-300' : 'border-slate-300'}`}>
-                                                    <option value="ABERTA">ABERTA</option><option value="FECHADA">FECHADA</option><option value="ENCAMINHADA">ENCAMINHADA</option><option value="CANCELADA">CANCELADA</option><option value="PAUSADA">PAUSADA</option>
-                                                </select>
+                                                <div className="flex flex-wrap gap-2 col-span-full sm:col-span-1">
+                                                    {['ABERTA', 'FECHADA', 'ENCAMINHADA', 'CANCELADA', 'PAUSADA'].map((s) => {
+                                                        const Icon = STATUS_ICON_MAP[s];
+                                                        const isActive = (value || 'ABERTA') === s;
+                                                        return (
+                                                            <button key={s} type="button" onClick={() => setQuickAddData((prev) => ({ ...prev, [column]: s }))} className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-bold transition-all active:scale-95 ${isActive ? (STATUS_COLORS[s] || 'bg-slate-100 text-slate-700 border-slate-300') : 'bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100'}`}>
+                                                                {Icon && <Icon className="w-3.5 h-3.5" />}
+                                                                {s}
+                                                            </button>
+                                                        );
+                                                    })}
+                                                </div>
                                             ) : (
                                                 <input type="text" value={value} onChange={(e) => setQuickAddData((prev) => ({ ...prev, [column]: e.target.value }))} className={`w-full px-3 py-2.5 border rounded-xl focus:ring-2 focus:ring-emerald-500 bg-white ${isRequired && !value.trim() ? 'border-red-300' : 'border-slate-300'}`} />
                                             )}
@@ -2141,36 +2188,120 @@ export default function App() {
             {selectedRecord && (
                 <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 z-[90] animate-in fade-in duration-200">
                     <div id="tour-record-modal" className="bg-white rounded-3xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-300">
-                        <div className="px-8 py-5 border-b flex justify-between bg-white items-center"><h3 className="text-xl font-bold text-slate-800 flex gap-2 items-center"><Briefcase className="w-6 h-6 text-indigo-600" />{isEditing ? 'Configurando Matriz' : 'Ficha Completa'}</h3><div className="flex gap-2 items-center">{!isEditing ? <button id="tour-record-edit-btn" onClick={handleEditClick} className="flex items-center gap-1.5 px-4 py-2 bg-indigo-50 text-indigo-700 font-bold rounded-xl text-sm hover:bg-indigo-100 transition-colors" type="button"><Edit2 className="w-4 h-4" /> Editar Todos os Campos</button> : <button id="tour-record-save-btn" onClick={handleSaveEdit} className="flex items-center gap-1.5 px-5 py-2 bg-green-600 text-white font-bold rounded-xl text-sm hover:bg-green-700 shadow-md transition-all active:scale-95" type="button"><Save className="w-4 h-4" /> Salvar Edicoes</button>}<button onClick={() => setSelectedRecord(null)} className="p-2 text-slate-400 hover:bg-slate-100 rounded-xl ml-2 transition-colors" type="button"><X className="w-5 h-5" /></button></div></div>
-                        <div className="p-8 overflow-y-auto flex-1 bg-slate-50 relative">
-                            {!isEditing ? (
-                                <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                                    <h4 className="text-xs font-bold text-slate-400 uppercase border-b pb-2 mb-4">Detalhes Completos</h4>
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                        {detailedColumns.map((column) => (
-                                            <div key={`view-${column}`} className="text-sm">
-                                                <p className="text-[11px] font-bold uppercase text-slate-500">{column}</p>
-                                                <p className="font-semibold text-slate-800 break-words">{String(selectedRecord?.[column] || 'Nao informado')}</p>
+
+                        {/* Tira de cor por status */}
+                        <div className={`h-1.5 shrink-0 ${STATUS_ACCENT[String(getRowValue(selectedRecord, ['Status', 'STATUS']) || '').toUpperCase()] || 'bg-indigo-500'}`} />
+
+                        {/* Cabeçalho */}
+                        <div className="px-7 py-5 border-b bg-white flex items-center gap-4">
+                            <div className="bg-indigo-50 p-2.5 rounded-2xl shrink-0">
+                                <Briefcase className="w-5 h-5 text-indigo-600" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-0.5">{isEditing ? 'Editando ficha' : 'Ficha Completa'}</p>
+                                <h3 className="text-lg font-black text-slate-800 truncate">{String(getRowValue(selectedRecord, ['Nome Subs', 'NOME SUBS']) || '—')}</h3>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0 flex-wrap justify-end">
+                                {!isEditing ? (
+                                    <>
+                                        <button id="tour-record-edit-btn" onClick={handleEditClick} className="flex items-center gap-1.5 px-4 py-2 bg-indigo-50 text-indigo-700 font-bold rounded-xl text-sm hover:bg-indigo-100 transition-colors" type="button">
+                                            <Edit2 className="w-4 h-4" /> Editar
+                                        </button>
+                                        {deleteConfirmOpen ? (
+                                            <div className="flex items-center gap-2 bg-red-50 border border-red-200 rounded-xl px-3 py-2">
+                                                <span className="text-xs font-bold text-red-700">Excluir registro?</span>
+                                                <button onClick={handleDeleteRecord} className="px-2.5 py-1 bg-red-600 text-white text-xs font-bold rounded-lg hover:bg-red-700 transition-colors active:scale-95" type="button">Sim</button>
+                                                <button onClick={() => setDeleteConfirmOpen(false)} className="px-2.5 py-1 bg-white border border-slate-300 text-slate-600 text-xs font-bold rounded-lg hover:bg-slate-50 transition-colors" type="button">Não</button>
                                             </div>
-                                        ))}
+                                        ) : (
+                                            <button onClick={() => setDeleteConfirmOpen(true)} className="flex items-center gap-1.5 px-4 py-2 bg-red-50 text-red-700 font-bold rounded-xl text-sm hover:bg-red-100 transition-colors" type="button">
+                                                <Trash2 className="w-4 h-4" /> Excluir
+                                            </button>
+                                        )}
+                                    </>
+                                ) : (
+                                    <button id="tour-record-save-btn" onClick={handleSaveEdit} className="flex items-center gap-1.5 px-5 py-2 bg-green-600 text-white font-bold rounded-xl text-sm hover:bg-green-700 shadow-md transition-all active:scale-95" type="button">
+                                        <Save className="w-4 h-4" /> Salvar
+                                    </button>
+                                )}
+                                <button onClick={() => { setSelectedRecord(null); setDeleteConfirmOpen(false); }} className="p-2 text-slate-400 hover:bg-slate-100 rounded-xl transition-colors ml-1" type="button">
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Corpo */}
+                        <div className="p-6 md:p-8 overflow-y-auto flex-1 bg-slate-50">
+                            {!isEditing ? (
+                                <div className="space-y-4">
+                                    {/* Card de status em destaque */}
+                                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 flex items-center gap-5">
+                                        <div>
+                                            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">Status Atual</p>
+                                            <StatusBadge status={String(getRowValue(selectedRecord, ['Status', 'STATUS']) || '')} size="lg" />
+                                        </div>
+                                        {String(getRowValue(selectedRecord, ['CARGO', 'Cargo', 'cargo']) || '') && (
+                                            <div className="border-l border-slate-200 pl-5">
+                                                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1">Cargo</p>
+                                                <p className="text-sm font-bold text-slate-700">{String(getRowValue(selectedRecord, ['CARGO', 'Cargo', 'cargo']))}</p>
+                                            </div>
+                                        )}
+                                        {String(getRowValue(selectedRecord, ['NRE / MUNICIPIO', 'NRE/MUNICIPIO', 'NRE', 'Municipio']) || '') && (
+                                            <div className="border-l border-slate-200 pl-5">
+                                                <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1">Município</p>
+                                                <p className="text-sm font-bold text-slate-700">{String(getRowValue(selectedRecord, ['NRE / MUNICIPIO', 'NRE/MUNICIPIO', 'NRE', 'Municipio']))}</p>
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    {/* Grid de todos os campos */}
+                                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
+                                        <h4 className="text-[10px] font-bold uppercase tracking-widest text-slate-400 border-b border-slate-100 pb-2 mb-4">Todos os campos</h4>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                                            {detailedColumns.map((column) => {
+                                                const fieldValue = String(selectedRecord?.[column] || '');
+                                                const isEmpty = !fieldValue.trim();
+                                                const isStatusField = normalizeCredentialText(column) === 'status';
+                                                return (
+                                                    <div key={`view-${column}`} className="p-3 rounded-xl bg-slate-50 border border-slate-100 hover:border-slate-200 transition-colors">
+                                                        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400 mb-1.5">{column}</p>
+                                                        {isStatusField ? (
+                                                            <StatusBadge status={fieldValue} />
+                                                        ) : (
+                                                            <p className={`text-sm font-semibold break-words leading-snug ${isEmpty ? 'text-slate-400 italic' : 'text-slate-800'}`}>
+                                                                {isEmpty ? 'Não informado' : fieldValue}
+                                                            </p>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
                                     </div>
                                 </div>
                             ) : (
-                                <div id="tour-record-edit-fields" className="space-y-6 bg-white p-8 rounded-2xl border shadow-inner">
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div id="tour-record-edit-fields" className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
                                         {detailedColumns.map((column) => {
                                             const isStatus = normalizeCredentialText(column) === 'status';
                                             const value = editFormData[column] === undefined || editFormData[column] === null ? '' : String(editFormData[column]);
-
                                             return (
                                                 <div key={`edit-${column}`} className="space-y-1.5">
-                                                    <label className="text-xs font-bold text-slate-500 uppercase">{column}</label>
+                                                    <label className="text-[10px] font-bold uppercase tracking-widest text-slate-400">{column}</label>
                                                     {isStatus ? (
-                                                        <select value={value} onChange={(e) => setEditFormData({ ...editFormData, [column]: e.target.value })} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-indigo-500 bg-slate-50">
-                                                            <option value="ABERTA">ABERTA</option><option value="FECHADA">FECHADA</option><option value="ENCAMINHADA">ENCAMINHADA</option><option value="CANCELADA">CANCELADA</option><option value="PAUSADA">PAUSADA</option>
-                                                        </select>
+                                                        <div className="flex flex-wrap gap-2">
+                                                            {['ABERTA', 'FECHADA', 'ENCAMINHADA', 'CANCELADA', 'PAUSADA'].map((s) => {
+                                                                const Icon = STATUS_ICON_MAP[s];
+                                                                const isActive = value === s;
+                                                                return (
+                                                                    <button key={s} type="button" onClick={() => setEditFormData({ ...editFormData, [column]: s })} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-bold transition-all active:scale-95 ${isActive ? (STATUS_COLORS[s] || 'bg-slate-100 text-slate-700 border-slate-300') : 'bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100'}`}>
+                                                                        {Icon && <Icon className="w-3.5 h-3.5" />}
+                                                                        {s}
+                                                                    </button>
+                                                                );
+                                                            })}
+                                                        </div>
                                                     ) : (
-                                                        <input type="text" value={value} onChange={(e) => setEditFormData({ ...editFormData, [column]: e.target.value })} className="w-full px-4 py-2.5 border rounded-xl focus:ring-2 focus:ring-indigo-500 bg-slate-50" />
+                                                        <input type="text" value={value} onChange={(e) => setEditFormData({ ...editFormData, [column]: e.target.value })} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500 bg-slate-50 text-sm" />
                                                     )}
                                                 </div>
                                             );
