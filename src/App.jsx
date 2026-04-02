@@ -2081,7 +2081,7 @@ export default function App() {
                                 </div>
 
                                 <div className="overflow-auto flex-1 bg-slate-100 p-2">
-                                    <table className="w-full text-left text-sm border-collapse bg-white shadow-sm ring-1 ring-slate-200">
+                                    <table className="w-full table-fixed text-left text-xs border-collapse bg-white shadow-sm ring-1 ring-slate-200">
                                         <thead id="tour-sheets-head" className="bg-slate-100 border-b-2 border-slate-300 text-slate-700 font-bold text-xs sticky top-0 z-10 shadow-sm">
                                             <tr>
                                                 {sheetsColumns.map((column, index) => {
@@ -2090,13 +2090,14 @@ export default function App() {
                                                     return (
                                                         <th
                                                             key={column}
-                                                            className={`px-3 py-2 min-w-[180px] ${isLast ? '' : 'border-r'} ${isCandidateBlock ? 'bg-green-50' : ''}`}
+                                                            title={column}
+                                                            className={`px-2 py-2 min-w-0 truncate ${isLast ? '' : 'border-r'} ${isCandidateBlock ? 'bg-green-50' : ''}`}
                                                         >
                                                             {column}
                                                         </th>
                                                     );
                                                 })}
-                                                <th className="px-3 py-2 min-w-[110px] text-right">Acoes</th>
+                                                <th className="px-2 py-2 w-[72px] text-right">Acoes</th>
                                             </tr>
                                         </thead>
                                         <tbody key={`sheets-${tableAnimationKey}`} className="divide-y divide-slate-200 font-medium">
@@ -2118,9 +2119,9 @@ export default function App() {
                                                             const value = rawValue === undefined || rawValue === null ? '' : String(rawValue);
 
                                                             return (
-                                                                <td key={`${row._id}-${column}`} className={`${isLast ? '' : 'border-r'} p-0 ${isCandidateBlock ? 'bg-green-50/30' : ''} ${row._isInvalid && isRequiredName && !value.trim() ? 'ring-2 ring-inset ring-red-500 bg-red-50' : ''}`}>
+                                                                <td key={`${row._id}-${column}`} className={`${isLast ? '' : 'border-r'} p-0 min-w-0 ${isCandidateBlock ? 'bg-green-50/30' : ''} ${row._isInvalid && isRequiredName && !value.trim() ? 'ring-2 ring-inset ring-red-500 bg-red-50' : ''}`}>
                                                                     {isStatus ? (
-                                                                        <select value={value} onChange={(e) => handleInlineEdit(row._id, column, e.target.value)} className="w-full h-full px-3 py-2 appearance-none cursor-pointer focus:bg-blue-100 bg-transparent transition-colors">
+                                                                        <select value={value} onChange={(e) => handleInlineEdit(row._id, column, e.target.value)} className="w-full h-full px-2 py-1.5 text-xs appearance-none cursor-pointer focus:bg-blue-100 bg-transparent transition-colors truncate" title={value}>
                                                                             <option value="ABERTA">ABERTA</option><option value="FECHADA">FECHADA</option><option value="ENCAMINHADA">ENCAMINHADA</option><option value="CANCELADA">CANCELADA</option><option value="PAUSADA">PAUSADA</option>
                                                                         </select>
                                                                     ) : (
@@ -2128,17 +2129,18 @@ export default function App() {
                                                                             type="text"
                                                                             value={value}
                                                                             onChange={(e) => handleInlineEdit(row._id, column, e.target.value)}
-                                                                            className={`w-full h-full px-3 py-2 bg-transparent transition-colors ${isCandidateBlock ? 'focus:bg-green-100' : 'focus:bg-blue-100'} ${normalizeCredentialText(column) === normalizeCredentialText('OBS:') ? 'text-xs' : ''} ${normalizeCredentialText(column) === normalizeCredentialText('Candidato') ? 'font-bold text-green-900 placeholder:text-green-300' : ''} ${row._isInvalid && isRequiredName ? 'placeholder:text-red-300' : ''}`}
+                                                                            title={value}
+                                                                            className={`w-full h-full px-2 py-1.5 text-xs bg-transparent transition-colors ${isCandidateBlock ? 'focus:bg-green-100' : 'focus:bg-blue-100'} ${normalizeCredentialText(column) === normalizeCredentialText('OBS:') ? 'text-[11px]' : ''} ${normalizeCredentialText(column) === normalizeCredentialText('Candidato') ? 'font-bold text-green-900 placeholder:text-green-300' : ''} ${row._isInvalid && isRequiredName ? 'placeholder:text-red-300' : ''}`}
                                                                             placeholder={row._isInvalid && isRequiredName ? 'Obrigatorio' : ''}
                                                                         />
                                                                     )}
                                                                 </td>
                                                             );
                                                         })}
-                                                        <td className="px-2 py-1 text-right border-l border-slate-200 bg-white">
+                                                        <td className="px-2 py-1 text-right border-l border-slate-200 bg-white align-middle">
                                                             <button
                                                                 onClick={() => requestDeleteRecord(row)}
-                                                                className="p-2.5 bg-white hover:bg-red-50 rounded-lg shadow-sm border border-slate-200 transition-all hover:border-red-300 hover:shadow-md active:scale-95"
+                                                                className="p-2 bg-white hover:bg-red-50 rounded-lg shadow-sm border border-slate-200 transition-all hover:border-red-300 hover:shadow-md active:scale-95"
                                                                 type="button"
                                                                 title="Excluir linha"
                                                             >
