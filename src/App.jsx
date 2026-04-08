@@ -789,7 +789,7 @@ const StatusBadge = ({ status, size = 'sm' }) => {
     );
 };
 
-const PatchNotesModal = ({ onClose, onStartTableTutorial, onStartSheetsTutorial }) => {
+const PatchNotesModal = ({ onClose }) => {
     return (
         <div className="fixed inset-0 z-[200] bg-slate-900/60 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
             <div className="bg-white rounded-3xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden animate-in zoom-in-95 duration-300">
@@ -881,14 +881,6 @@ const PatchNotesModal = ({ onClose, onStartTableTutorial, onStartSheetsTutorial 
                 <div className="px-8 py-4 border-t bg-slate-50 flex flex-wrap justify-end gap-3">
                     <button onClick={onClose} className="px-6 py-2.5 text-slate-700 font-bold hover:bg-slate-200 rounded-xl transition-colors" type="button">
                         Agora nao
-                    </button>
-                    <button onClick={onStartSheetsTutorial} className="px-6 py-2.5 bg-emerald-600 text-white font-bold rounded-xl hover:bg-emerald-700 shadow-md active:scale-95 transition-all inline-flex items-center gap-2" type="button">
-                        <ChevronRight className="w-4 h-4" />
-                        Tutorial Planilha
-                    </button>
-                    <button onClick={onStartTableTutorial} className="px-6 py-2.5 bg-indigo-600 text-white font-bold rounded-xl hover:bg-indigo-700 shadow-md active:scale-95 transition-all inline-flex items-center gap-2" type="button">
-                        <ChevronRight className="w-4 h-4" />
-                        Tutorial Tabela
                     </button>
                 </div>
             </div>
@@ -1647,24 +1639,6 @@ export default function App() {
             ...previous,
             PATCH_NOTES_VIEWED: true,
         }));
-    };
-
-    const handlePatchNotesStartTableTutorial = () => {
-        handlePatchNotesClose();
-        setTimeout(() => {
-            setActiveTab('TABELA');
-            setTutorialSection('NEW_FEATURES_TABLE');
-            setShowTutorial(true);
-        }, 200);
-    };
-
-    const handlePatchNotesStartSheetsTutorial = () => {
-        handlePatchNotesClose();
-        setTimeout(() => {
-            setActiveTab('SHEETS');
-            setTutorialSection('NEW_FEATURES_SHEETS_V2');
-            setShowTutorial(true);
-        }, 220);
     };
 
     const handleTutorialComplete = (section, dontShow) => {
