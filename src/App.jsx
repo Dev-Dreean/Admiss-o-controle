@@ -39,6 +39,8 @@ const STATUS_ACCENT = {
 
 const GOOGLE_SHEETS_URL = 'https://docs.google.com/spreadsheets/d/1hmLkIX2B4rh6NDtJUXOhtjdXhddozqPs9uMTzaTeBsk/edit?usp=sharing';
 const GOOGLE_SHEETS_CSV_EXPORT = 'https://docs.google.com/spreadsheets/d/1hmLkIX2B4rh6NDtJUXOhtjdXhddozqPs9uMTzaTeBsk/export?format=csv';
+const GOOGLE_SHEETS_TAB_NAME = 'PAINEL';
+const GOOGLE_APPS_SCRIPT_URL = import.meta.env.VITE_GOOGLE_APPS_SCRIPT_URL || 'https://script.google.com/macros/s/AKfycbzddulxFwzjY5YTdJ1fpPZXqIov3Go6xc6srSUiRzmJzI-KVgpUySWCdCljLa5zxXnH/exec';
 const AUTH_ACCESS_KEY = 'Plansul@2025';
 const AUTH_SESSION_DURATION_MS = 24 * 60 * 60 * 1000;
 const AUTH_DB_STORAGE_KEY = 'vagas_internal_account_excel_encrypted';
@@ -319,6 +321,24 @@ const getPrazoKey = (row) => getRowKey(row, PRAZO_KEYS);
 const SHEETS_PRIORITY_COLUMNS = ['Status', 'Nome Subs', 'CARGO', 'Candidato', 'Contato Candidato', 'NRE / MUNICIPIO', 'Motivo', 'OBS:'];
 const isBlankCell = (value) => value === undefined || value === null || String(value).trim() === '';
 const DEFAULT_SHEET_UI_PREFS = { hiddenColumns: [], widthOverrides: {}, columnOrder: [] };
+const INTERNAL_ROW_KEYS = new Set(['_id', '_isInvalid']);
+
+const buildSheetsPayload = (rows) => {
+    const safeRows = Array.isArray(rows) ? rows : [];
+    const headers = Array.from(safeRows.reduce((set, row) => {
+        Object.keys(row || {}).forEach((key) => {
+            if (!INTERNAL_ROW_KEYS.has(key)) set.add(key);
+        });
+        return set;
+    }, new Set()));
+
+    return {
+        headers,
+        rows: safeRows.map((row) => Object.fromEntries(headers.map((header) => [header, row?.[header] ?? '']))),
+    };
+};
+
+const getSheetsPayloadSnapshot = (rows) => JSON.stringify(buildSheetsPayload(rows));
 
 const computeImportOutcome = (previousRows, importedRows, fromSheets) => {
     const prevArray = Array.isArray(previousRows) ? previousRows : [];
@@ -1235,6 +1255,11 @@ export default function App() {
     const sheetColumnsPanelRef = useRef(null);
     const sheetResizeStateRef = useRef(null);
     const sheetsSyncStateRef = useRef({ inFlight: false, lastAt: 0 });
+    const sheetsWriteStateRef = useRef({ inFlight: false, lastAt: 0 });
+    const initialSheetsLoadFinishedRef = useRef(false);
+    const lastDataChangeSourceRef = useRef('bootstrap');
+    const lastRemoteSnapshotRef = useRef('');
+    const autoSyncTimeoutRef = useRef(null);
     const sheetPrefsSyncTimeoutRef = useRef(null);
     const persistAccount = (account) => {
         if (!hasStoredAccount(account)) {
@@ -1531,31 +1556,61 @@ export default function App() {
     };
 
     const processDataImport = (newDataArray, fromSheets, isSilent = false, sourceLabel = fromSheets ? 'Google Sheets' : 'Arquivo Excel') => {
-        let nextSummary = null;
+        const importOutcome = computeImportOutcome(history.present, newDataArray, fromSheets);
+        const validatedRows = validateData(importOutcome.mergedRows);
+        const nextSummary = {
+            sourceLabel,
+            synchronizedWithSheets: fromSheets,
+            totalImported: importOutcome.stats.totalImported,
+            addedCount: importOutcome.stats.addedCount,
+            updatedCount: importOutcome.stats.updatedCount,
+            unchangedCount: importOutcome.stats.unchangedCount,
+            invalidCount: validatedRows.filter((row) => row._isInvalid).length,
+            totalAfterImport: validatedRows.length,
+            importedAt: new Date().toISOString(),
+        };
 
-        setAppData((prevData) => {
-            const importOutcome = computeImportOutcome(prevData, newDataArray, fromSheets);
-            const validatedRows = validateData(importOutcome.mergedRows);
-
-            nextSummary = {
-                sourceLabel,
-                synchronizedWithSheets: fromSheets,
-                totalImported: importOutcome.stats.totalImported,
-                addedCount: importOutcome.stats.addedCount,
-                updatedCount: importOutcome.stats.updatedCount,
-                unchangedCount: importOutcome.stats.unchangedCount,
-                invalidCount: validatedRows.filter((row) => row._isInvalid).length,
-                totalAfterImport: validatedRows.length,
-                importedAt: new Date().toISOString(),
-            };
-
-            return validatedRows;
-        });
+        setAppData(validatedRows, { source: fromSheets ? 'sheets' : 'local-import' });
 
         if (!isSilent && nextSummary) setImportSummary(nextSummary);
         if (!isSilent) setLoading(false);
 
-        return nextSummary;
+        return { summary: nextSummary, rows: validatedRows };
+    };
+
+    const pushGoogleSheetsData = async (rows, { reason = 'manual' } = {}) => {
+        const writeState = sheetsWriteStateRef.current;
+        if (writeState.inFlight) return false;
+
+        const payload = buildSheetsPayload(rows);
+        const snapshot = JSON.stringify(payload);
+        if (!payload.headers.length) return false;
+
+        writeState.inFlight = true;
+        writeState.lastAt = Date.now();
+
+        try {
+            await fetch(GOOGLE_APPS_SCRIPT_URL, {
+                method: 'POST',
+                mode: 'no-cors',
+                headers: {
+                    'Content-Type': 'text/plain;charset=utf-8',
+                },
+                body: JSON.stringify({
+                    ...payload,
+                    sheetName: GOOGLE_SHEETS_TAB_NAME,
+                    reason,
+                }),
+            });
+
+            lastRemoteSnapshotRef.current = snapshot;
+            return true;
+        } catch (error) {
+            return false;
+        } finally {
+            writeState.inFlight = false;
+            writeState.lastAt = Date.now();
+        }
     };
 
     const syncGoogleSheetsData = async ({ silent = false, force = false, showInitialLoader = false } = {}) => {
@@ -1576,7 +1631,8 @@ export default function App() {
             if (!response.ok) throw new Error('CORS');
 
             const parsed = parseCSV(await response.text());
-            const summary = processDataImport(parsed, true, silent, 'Google Sheets');
+            const { summary } = processDataImport(parsed, true, silent, 'Google Sheets');
+            initialSheetsLoadFinishedRef.current = true;
             if ((!parsed || parsed.length === 0) && !silent) setLoading(false);
 
             return summary;
@@ -1614,9 +1670,32 @@ export default function App() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    const setAppData = (action) => {
+    useEffect(() => () => {
+        if (autoSyncTimeoutRef.current) window.clearTimeout(autoSyncTimeoutRef.current);
+    }, []);
+
+    useEffect(() => {
+        if (!initialSheetsLoadFinishedRef.current) return;
+        if (lastDataChangeSourceRef.current === 'sheets') return;
+
+        const snapshot = getSheetsPayloadSnapshot(data);
+        if (snapshot === lastRemoteSnapshotRef.current) return;
+
+        if (autoSyncTimeoutRef.current) window.clearTimeout(autoSyncTimeoutRef.current);
+        autoSyncTimeoutRef.current = window.setTimeout(() => {
+            pushGoogleSheetsData(data, { reason: lastDataChangeSourceRef.current || 'autosave' });
+        }, 1200);
+
+        return () => {
+            if (autoSyncTimeoutRef.current) window.clearTimeout(autoSyncTimeoutRef.current);
+        };
+    }, [data]);
+
+    const setAppData = (action, options = {}) => {
         const newPresent = typeof action === 'function' ? action(history.present) : action;
         if (JSON.stringify(newPresent) === JSON.stringify(history.present)) return;
+        lastDataChangeSourceRef.current = options.source || 'local';
+        if (lastDataChangeSourceRef.current !== 'sheets') initialSheetsLoadFinishedRef.current = true;
         setHistory((h) => ({ past: [...h.past, h.present].slice(-30), present: newPresent, future: [] }));
         setLocalData(newPresent);
     };
@@ -1626,6 +1705,7 @@ export default function App() {
             if (h.past.length === 0) return h;
             const previous = h.past[h.past.length - 1];
             const newPast = h.past.slice(0, h.past.length - 1);
+            lastDataChangeSourceRef.current = 'undo';
             setLocalData(previous);
             return { past: newPast, present: previous, future: [h.present, ...h.future] };
         });
@@ -1636,6 +1716,7 @@ export default function App() {
             if (h.future.length === 0) return h;
             const next = h.future[0];
             const newFuture = h.future.slice(1);
+            lastDataChangeSourceRef.current = 'redo';
             setLocalData(next);
             return { past: [...h.past, h.present], present: next, future: newFuture };
         });
@@ -1699,7 +1780,14 @@ export default function App() {
             const buffer = await file.arrayBuffer();
             const workbook = XLSX.read(buffer, { type: 'array' });
             const worksheet = workbook.Sheets.PAINEL || workbook.Sheets[workbook.SheetNames[0]];
-            processDataImport(XLSX.utils.sheet_to_json(worksheet, { defval: '', raw: false }), false);
+            const { summary, rows } = processDataImport(XLSX.utils.sheet_to_json(worksheet, { defval: '', raw: false }), false);
+            const synchronized = await pushGoogleSheetsData(rows, { reason: 'file-import' });
+            if (summary) {
+                setImportSummary({
+                    ...summary,
+                    synchronizedWithSheets: synchronized,
+                });
+            }
         } catch (error) {
             alert('Erro de parsing.');
         } finally {
