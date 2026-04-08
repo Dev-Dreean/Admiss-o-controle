@@ -4,7 +4,7 @@ import {
     X, ChevronRight, Briefcase, Download, Edit2, Save,
     LayoutDashboard, ListTodo, TableProperties, PlusCircle,
     BarChart2, PieChart as PieChartIcon, Trash2, CheckCircle2, XCircle, Send, PauseCircle,
-    Undo2, Redo2, Check, ChevronLeft, ChevronUp, ChevronDown, GripVertical, Map, LogOut, Sliders
+    Undo2, Redo2, Check, ChevronLeft, ChevronUp, ChevronDown, GripVertical, Map, LogOut, Sliders, LoaderCircle
 } from 'lucide-react';
 import {
     PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer
@@ -50,6 +50,7 @@ const AUTH_DB_SECRET = 'controle-admissoes-auth-db-v1';
 const GRID_PAGE_SIZE = 200;
 const SHEETS_PAGE_SIZE = 120;
 const SHEETS_AUTO_SYNC_COOLDOWN_MS = 45000;
+const SHEETS_ACTIVE_POLL_INTERVAL_MS = 20000;
 const REQUIRED_FIELDS = ['Nome Subs', 'Status'];
 
 const encodeBase64 = (arrayBuffer) => {
@@ -339,6 +340,32 @@ const buildSheetsPayload = (rows) => {
 };
 
 const getSheetsPayloadSnapshot = (rows) => JSON.stringify(buildSheetsPayload(rows));
+
+const getRowIdentity = (row) => {
+    const enrollmentId = String(getRowValue(row, ['Mat. Subs', 'Mat Subs', 'Matricula Subs', 'Matrícula Subs']) || '').trim();
+    const protocolId = String(getRowValue(row, ['NÂº Protoc', 'Nº Protoc', 'N° Protoc', 'No Protoc', 'Numero Protoc']) || '').trim();
+    if (enrollmentId) return `mat:${enrollmentId}`;
+    if (protocolId) return `protocol:${protocolId}`;
+    return '';
+};
+
+const hydrateRowsFromSheets = (previousRows, importedRows) => {
+    const safePreviousRows = Array.isArray(previousRows) ? previousRows : [];
+    const cleanedRows = Array.isArray(importedRows)
+        ? importedRows.filter((row) => Object.values(row || {}).some((val) => val !== null && String(val).trim() !== ''))
+        : [];
+
+    const previousIdByIdentity = new Map(
+        safePreviousRows
+            .map((row) => [getRowIdentity(row), row?._id])
+            .filter(([identity, id]) => identity && id !== undefined && id !== null),
+    );
+
+    return cleanedRows.map((row, index) => ({
+        ...row,
+        _id: previousIdByIdentity.get(getRowIdentity(row)) || `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+    }));
+};
 
 const computeImportOutcome = (previousRows, importedRows, fromSheets) => {
     const prevArray = Array.isArray(previousRows) ? previousRows : [];
@@ -1244,6 +1271,7 @@ export default function App() {
     const [importSummary, setImportSummary] = useState(null);
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
     const [deleteModalRecord, setDeleteModalRecord] = useState(null);
+    const [lastSheetsSyncAt, setLastSheetsSyncAt] = useState('');
 
     const [isCinematic, setIsCinematic] = useState(false);
     const [draggedSheetColumn, setDraggedSheetColumn] = useState('');
@@ -1556,11 +1584,22 @@ export default function App() {
     };
 
     const processDataImport = (newDataArray, fromSheets, isSilent = false, sourceLabel = fromSheets ? 'Google Sheets' : 'Arquivo Excel') => {
-        const importOutcome = computeImportOutcome(history.present, newDataArray, fromSheets);
+        const importOutcome = fromSheets
+            ? {
+                mergedRows: hydrateRowsFromSheets(history.present, newDataArray),
+                stats: {
+                    totalImported: Array.isArray(newDataArray) ? newDataArray.filter((row) => Object.values(row || {}).some((val) => val !== null && String(val).trim() !== '')).length : 0,
+                    addedCount: 0,
+                    updatedCount: 0,
+                    unchangedCount: 0,
+                },
+            }
+            : computeImportOutcome(history.present, newDataArray, fromSheets);
         const validatedRows = validateData(importOutcome.mergedRows);
         const nextSummary = {
             sourceLabel,
             synchronizedWithSheets: fromSheets,
+            syncStatus: fromSheets ? 'success' : 'pending',
             totalImported: importOutcome.stats.totalImported,
             addedCount: importOutcome.stats.addedCount,
             updatedCount: importOutcome.stats.updatedCount,
@@ -1571,6 +1610,7 @@ export default function App() {
         };
 
         setAppData(validatedRows, { source: fromSheets ? 'sheets' : 'local-import' });
+        if (fromSheets) setLastSheetsSyncAt(new Date().toISOString());
 
         if (!isSilent && nextSummary) setImportSummary(nextSummary);
         if (!isSilent) setLoading(false);
@@ -1604,6 +1644,7 @@ export default function App() {
             });
 
             lastRemoteSnapshotRef.current = snapshot;
+            setLastSheetsSyncAt(new Date().toISOString());
             return true;
         } catch (error) {
             return false;
@@ -1669,6 +1710,16 @@ export default function App() {
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+
+    useEffect(() => {
+        const intervalId = window.setInterval(() => {
+            if (document.visibilityState !== 'visible') return;
+            if (isEditing || isQuickAddModalOpen || loading) return;
+            syncGoogleSheetsData({ silent: true, force: true });
+        }, SHEETS_ACTIVE_POLL_INTERVAL_MS);
+
+        return () => window.clearInterval(intervalId);
+    }, [isEditing, isQuickAddModalOpen, loading]);
 
     useEffect(() => () => {
         if (autoSyncTimeoutRef.current) window.clearTimeout(autoSyncTimeoutRef.current);
@@ -1781,10 +1832,19 @@ export default function App() {
             const workbook = XLSX.read(buffer, { type: 'array' });
             const worksheet = workbook.Sheets.PAINEL || workbook.Sheets[workbook.SheetNames[0]];
             const { summary, rows } = processDataImport(XLSX.utils.sheet_to_json(worksheet, { defval: '', raw: false }), false);
+            if (summary) {
+                setImportSummary({
+                    ...summary,
+                    syncStatus: 'pending',
+                    synchronizedWithSheets: false,
+                });
+            }
+            await new Promise((resolve) => window.setTimeout(resolve, 1400));
             const synchronized = await pushGoogleSheetsData(rows, { reason: 'file-import' });
             if (summary) {
                 setImportSummary({
                     ...summary,
+                    syncStatus: synchronized ? 'success' : 'error',
                     synchronizedWithSheets: synchronized,
                 });
             }
@@ -2884,7 +2944,7 @@ export default function App() {
                                 <h3 className="text-lg font-black text-slate-800">Resumo da importacao</h3>
                                 <p className="text-sm text-slate-600 mt-0.5">Origem: <span className="font-bold text-slate-800">{importSummary.sourceLabel}</span></p>
                             </div>
-                            <button onClick={() => setImportSummary(null)} className="text-slate-400 hover:text-slate-700 transition-colors" type="button"><X className="w-5 h-5" /></button>
+                            <button onClick={() => setImportSummary(null)} disabled={importSummary.syncStatus === 'pending'} className="text-slate-400 hover:text-slate-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed" type="button"><X className="w-5 h-5" /></button>
                         </div>
 
                         <div className="px-6 py-5 space-y-4 bg-white">
@@ -2918,22 +2978,30 @@ export default function App() {
                                 </div>
                                 <div className="flex items-center justify-between gap-3">
                                     <span className="text-sm font-bold text-slate-700">Google Sheets</span>
-                                    <span className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-black ${importSummary.synchronizedWithSheets ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
-                                        {importSummary.synchronizedWithSheets ? <CheckCircle2 className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
-                                        {importSummary.synchronizedWithSheets ? 'Sincronizado agora' : 'Importacao local somente'}
+                                    <span className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-black ${importSummary.syncStatus === 'pending' ? 'bg-sky-100 text-sky-800' : importSummary.synchronizedWithSheets ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                                        {importSummary.syncStatus === 'pending' ? <LoaderCircle className="w-4 h-4 animate-spin" /> : importSummary.synchronizedWithSheets ? <CheckCircle2 className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
+                                        {importSummary.syncStatus === 'pending' ? 'Sincronizando...' : importSummary.synchronizedWithSheets ? 'Sincronizado agora' : 'Falha ao sincronizar'}
                                     </span>
                                 </div>
+                                {lastSheetsSyncAt && (
+                                    <div className="flex items-center justify-between gap-3">
+                                        <span className="text-sm font-bold text-slate-700">Ultima atualizacao online</span>
+                                        <span className="text-xs font-black text-slate-600">{new Date(lastSheetsSyncAt).toLocaleString('pt-BR')}</span>
+                                    </div>
+                                )}
                             </div>
 
-                            <p className={`text-sm leading-relaxed ${importSummary.synchronizedWithSheets ? 'text-emerald-700' : 'text-amber-700'}`}>
-                                {importSummary.synchronizedWithSheets
-                                    ? 'Os dados foram atualizados a partir do Google Sheets e a base exibida ja esta alinhada com a planilha online.'
-                                    : 'Os dados foram importados para o sistema, mas esta importacao ainda nao grava automaticamente no Google Sheets.'}
+                            <p className={`text-sm leading-relaxed ${importSummary.syncStatus === 'pending' ? 'text-sky-700' : importSummary.synchronizedWithSheets ? 'text-emerald-700' : 'text-amber-700'}`}>
+                                {importSummary.syncStatus === 'pending'
+                                    ? 'A importacao foi concluida e o sistema esta aguardando a gravacao na planilha online. Aguarde alguns segundos.'
+                                    : importSummary.synchronizedWithSheets
+                                        ? 'Os dados foram gravados na planilha online e os outros usuarios ativos vao receber a atualizacao automaticamente.'
+                                        : 'Nao foi possivel confirmar a gravacao online agora. Revise a conexao e tente novamente.'}
                             </p>
                         </div>
 
                         <div className="px-6 py-4 border-t bg-slate-50 flex items-center justify-end gap-3">
-                            <button onClick={() => setImportSummary(null)} className="px-5 py-2.5 rounded-xl bg-slate-900 text-white font-bold hover:bg-slate-800 shadow-md active:scale-95 transition-all" type="button">Fechar resumo</button>
+                            <button onClick={() => setImportSummary(null)} disabled={importSummary.syncStatus === 'pending'} className="px-5 py-2.5 rounded-xl bg-slate-900 text-white font-bold hover:bg-slate-800 shadow-md active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100" type="button">{importSummary.syncStatus === 'pending' ? 'Aguarde a sincronizacao' : 'Fechar resumo'}</button>
                         </div>
                     </div>
                 </div>
