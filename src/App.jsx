@@ -319,6 +319,9 @@ const PRAZO_KEYS = [
     'Data de Prazo',
     'Data Inicio',
 ];
+const PROTOCOL_KEYS = ['NÃ‚Âº Protoc', 'NÂº Protoc', 'NÂ° Protoc', 'No Protoc', 'Numero Protoc', 'Nº Protoc', 'N° Protoc'];
+const SUBS_ENROLLMENT_KEYS = ['Mat. Subs', 'Mat Subs', 'Matricula Subs', 'MatrÃ­cula Subs', 'Matrícula Subs'];
+const MUNICIPIO_KEYS = ['NRE / MUNICIPIO', 'NRE/MUNICIPIO', 'NRE', 'Municipio'];
 const isPrazoColumn = (column) => PRAZO_KEYS.some((key) => normalizeCredentialText(key) === normalizeCredentialText(column));
 
 const getRowValue = (row, possibleKeys) => {
@@ -386,6 +389,20 @@ const getRowIdentity = (row) => {
     return '';
 };
 
+const getImportIdentity = (row) => {
+    const protocolId = String(getRowValue(row, PROTOCOL_KEYS) || '').trim();
+    const enrollmentId = String(getRowValue(row, SUBS_ENROLLMENT_KEYS) || '').trim();
+    const cargo = String(getRowValue(row, ['CARGO', 'Cargo', 'cargo']) || '').trim();
+    const municipio = String(getRowValue(row, MUNICIPIO_KEYS) || '').trim();
+    const prazo = formatDateDisplay(getPrazoValue(row));
+    const motivo = String(getRowValue(row, ['Motivo', 'MOTIVO']) || '').trim();
+
+    if (protocolId) return `protocol:${protocolId}`;
+    if (enrollmentId) return `mat:${enrollmentId}|cargo:${cargo}|municipio:${municipio}|prazo:${prazo}|motivo:${motivo}`;
+    if (cargo || municipio || prazo || motivo) return `fallback:${cargo}|${municipio}|${prazo}|${motivo}`;
+    return '';
+};
+
 const hydrateRowsFromSheets = (previousRows, importedRows) => {
     const safePreviousRows = Array.isArray(previousRows) ? previousRows : [];
     const cleanedRows = Array.isArray(importedRows)
@@ -394,13 +411,13 @@ const hydrateRowsFromSheets = (previousRows, importedRows) => {
 
     const previousIdByIdentity = new Map(
         safePreviousRows
-            .map((row) => [getRowIdentity(row), row?._id])
+            .map((row) => [getImportIdentity(row), row?._id])
             .filter(([identity, id]) => identity && id !== undefined && id !== null),
     );
 
     return cleanedRows.map((row, index) => ({
         ...row,
-        _id: previousIdByIdentity.get(getRowIdentity(row)) || `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+        _id: previousIdByIdentity.get(getImportIdentity(row)) || `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
     }));
 };
 
@@ -451,6 +468,87 @@ const computeImportOutcome = (previousRows, importedRows, fromSheets) => {
             });
 
             mergedRows[existingIdx] = mergedRow;
+            if (hasChanges) updatedCount += 1;
+            else unchangedCount += 1;
+            return;
+        }
+
+        const preserve = {
+            Candidato: currentRow.Candidato !== 'SEM COBERTURA' ? currentRow.Candidato : newRow.Candidato,
+            Status: currentRow.Status !== 'ABERTA' ? currentRow.Status : newRow.Status,
+            'Contato Candidato': currentRow['Contato Candidato'] || newRow['Contato Candidato'],
+            'OBS:': currentRow['OBS:'] || newRow['OBS:'],
+        };
+
+        const nextRow = { ...currentRow, ...newRow, ...preserve };
+        const hasChanges = Object.keys(nextRow).some((key) => {
+            if (key === '_id' || key === '_isInvalid') return false;
+            return String(currentRow[key] ?? '') !== String(nextRow[key] ?? '');
+        });
+
+        mergedRows[existingIdx] = nextRow;
+        if (hasChanges) updatedCount += 1;
+        else unchangedCount += 1;
+    });
+
+    return {
+        mergedRows,
+        stats: {
+            totalImported: cleanedRows.length,
+            addedCount,
+            updatedCount,
+            unchangedCount,
+        },
+    };
+};
+
+const computeImportOutcomeSafe = (previousRows, importedRows, fromSheets) => {
+    const prevArray = Array.isArray(previousRows) ? previousRows : [];
+    const cleanedRows = Array.isArray(importedRows)
+        ? importedRows.filter((row) => Object.values(row || {}).some((val) => val !== null && String(val).trim() !== ''))
+        : [];
+
+    if (prevArray.length === 0) {
+        const seededRows = cleanedRows.map((row) => ({ ...row, _id: Math.random().toString(36).slice(2, 11) }));
+        return {
+            mergedRows: seededRows,
+            stats: {
+                totalImported: cleanedRows.length,
+                addedCount: seededRows.length,
+                updatedCount: 0,
+                unchangedCount: 0,
+            },
+        };
+    }
+
+    let addedCount = 0;
+    let updatedCount = 0;
+    let unchangedCount = 0;
+    const mergedRows = [...prevArray];
+
+    cleanedRows.forEach((newRow) => {
+        const newRowIdentity = getImportIdentity(newRow);
+        const existingIdx = mergedRows.findIndex((row) => {
+            const currentIdentity = getImportIdentity(row);
+            return Boolean(newRowIdentity && currentIdentity && currentIdentity === newRowIdentity);
+        });
+
+        if (existingIdx < 0) {
+            mergedRows.push({ ...newRow, _id: Math.random().toString(36).slice(2, 11) });
+            addedCount += 1;
+            return;
+        }
+
+        const currentRow = mergedRows[existingIdx];
+
+        if (fromSheets) {
+            const nextRow = { ...newRow, _id: currentRow._id };
+            const hasChanges = Object.keys({ ...currentRow, ...nextRow }).some((key) => {
+                if (key === '_id' || key === '_isInvalid') return false;
+                return String(currentRow[key] ?? '') !== String(nextRow[key] ?? '');
+            });
+
+            mergedRows[existingIdx] = nextRow;
             if (hasChanges) updatedCount += 1;
             else unchangedCount += 1;
             return;
@@ -1631,7 +1729,7 @@ export default function App() {
                     unchangedCount: 0,
                 },
             }
-            : computeImportOutcome(history.present, newDataArray, fromSheets);
+            : computeImportOutcomeSafe(history.present, newDataArray, fromSheets);
         const validatedRows = validateData(importOutcome.mergedRows);
         const nextSummary = {
             sourceLabel,
