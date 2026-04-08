@@ -39,7 +39,7 @@ const STATUS_ACCENT = {
 
 const GOOGLE_SHEETS_ID = '1hmLkIX2B4rh6NDtJUXOhtjdXhddozqPs9uMTzaTeBsk';
 const GOOGLE_SHEETS_URL = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEETS_ID}/edit?usp=sharing`;
-const GOOGLE_SHEETS_CSV_EXPORT = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEETS_ID}/export?format=csv&sheet=${encodeURIComponent('PAINEL')}`;
+const GOOGLE_SHEETS_CSV_EXPORT = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEETS_ID}/export?format=csv`;
 const GOOGLE_SHEETS_GVIZ_URL = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEETS_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent('PAINEL')}`;
 const GOOGLE_SHEETS_TAB_NAME = 'PAINEL';
 const GOOGLE_APPS_SCRIPT_URL = import.meta.env.VITE_GOOGLE_APPS_SCRIPT_URL || 'https://script.google.com/macros/s/AKfycbzddulxFwzjY5YTdJ1fpPZXqIov3Go6xc6srSUiRzmJzI-KVgpUySWCdCljLa5zxXnH/exec';
@@ -274,9 +274,16 @@ const parseGoogleVisualizationRows = (payload) => {
 };
 
 const fetchGoogleSheetPanelRows = async () => {
-    const response = await fetch(`${GOOGLE_SHEETS_CSV_EXPORT}&t=${Date.now()}`);
-    if (!response.ok) throw new Error('CSV_FETCH_FAILED');
-    return normalizeIncomingRows(parseCSV(await response.text()));
+    try {
+        const response = await fetch(`${GOOGLE_SHEETS_GVIZ_URL}&t=${Date.now()}`);
+        if (!response.ok) throw new Error('GVIZ_FETCH_FAILED');
+        const payload = parseGoogleVisualizationResponse(await response.text());
+        return normalizeIncomingRows(parseGoogleVisualizationRows(payload));
+    } catch (error) {
+        const fallbackResponse = await fetch(GOOGLE_SHEETS_CSV_EXPORT);
+        if (!fallbackResponse.ok) throw error;
+        return normalizeIncomingRows(parseCSV(await fallbackResponse.text()));
+    }
 };
 
 function useLocalStorage(key, initialValue) {
