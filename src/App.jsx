@@ -4,7 +4,7 @@ import {
     X, ChevronRight, Briefcase, Download, Edit2, Save,
     LayoutDashboard, ListTodo, TableProperties, PlusCircle,
     BarChart2, PieChart as PieChartIcon, Trash2, CheckCircle2, XCircle, Send, PauseCircle,
-    Undo2, Redo2, Check, ChevronLeft, ChevronUp, ChevronDown, GripVertical, Map, LogOut, Sliders
+    Undo2, Redo2, Check, ChevronLeft, ChevronUp, ChevronDown, GripVertical, Map, LogOut, Sliders, LoaderCircle
 } from 'lucide-react';
 import {
     PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer
@@ -39,6 +39,8 @@ const STATUS_ACCENT = {
 
 const GOOGLE_SHEETS_URL = 'https://docs.google.com/spreadsheets/d/1hmLkIX2B4rh6NDtJUXOhtjdXhddozqPs9uMTzaTeBsk/edit?usp=sharing';
 const GOOGLE_SHEETS_CSV_EXPORT = 'https://docs.google.com/spreadsheets/d/1hmLkIX2B4rh6NDtJUXOhtjdXhddozqPs9uMTzaTeBsk/export?format=csv';
+const GOOGLE_SHEETS_TAB_NAME = 'PAINEL';
+const GOOGLE_APPS_SCRIPT_URL = import.meta.env.VITE_GOOGLE_APPS_SCRIPT_URL || 'https://script.google.com/macros/s/AKfycbzddulxFwzjY5YTdJ1fpPZXqIov3Go6xc6srSUiRzmJzI-KVgpUySWCdCljLa5zxXnH/exec';
 const AUTH_ACCESS_KEY = 'Plansul@2025';
 const AUTH_SESSION_DURATION_MS = 24 * 60 * 60 * 1000;
 const AUTH_DB_STORAGE_KEY = 'vagas_internal_account_excel_encrypted';
@@ -48,6 +50,7 @@ const AUTH_DB_SECRET = 'controle-admissoes-auth-db-v1';
 const GRID_PAGE_SIZE = 200;
 const SHEETS_PAGE_SIZE = 120;
 const SHEETS_AUTO_SYNC_COOLDOWN_MS = 45000;
+const SHEETS_ACTIVE_POLL_INTERVAL_MS = 20000;
 const REQUIRED_FIELDS = ['Nome Subs', 'Status'];
 
 const encodeBase64 = (arrayBuffer) => {
@@ -129,20 +132,56 @@ const readEncryptedExcelAuthDb = (encryptedValue) => {
 
 const safeGet = (obj, key) => String(obj[key] || '').trim().toUpperCase();
 
+const expandShortYear = (year) => {
+    const numericYear = parseInt(year, 10);
+    if (Number.isNaN(numericYear)) return null;
+    if (String(year).length >= 4) return numericYear;
+    return 2000 + numericYear;
+};
+
+const buildSafeDate = (day, month, year) => {
+    const normalizedDay = parseInt(day, 10);
+    const normalizedMonth = parseInt(month, 10);
+    const normalizedYear = expandShortYear(year);
+
+    if (!normalizedDay || !normalizedMonth || !normalizedYear) return null;
+
+    const date = new Date(normalizedYear, normalizedMonth - 1, normalizedDay);
+    if (
+        Number.isNaN(date.getTime())
+        || date.getFullYear() !== normalizedYear
+        || date.getMonth() !== normalizedMonth - 1
+        || date.getDate() !== normalizedDay
+    ) {
+        return null;
+    }
+
+    return date;
+};
+
 const parseDate = (dateStr) => {
     if (!dateStr || dateStr === '-') return null;
     const str = String(dateStr).trim().split(' ')[0];
     if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
         const [y, m, d] = str.split('-');
-        return new Date(parseInt(y, 10), parseInt(m, 10) - 1, parseInt(d, 10));
+        return buildSafeDate(d, m, y);
     }
     if (/^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(str)) {
         const [d, m, y] = str.split('/');
-        return new Date(parseInt(y, 10), parseInt(m, 10) - 1, parseInt(d, 10));
+        return buildSafeDate(d, m, y);
     }
     const parsed = new Date(dateStr);
     if (!Number.isNaN(parsed.getTime())) return new Date(parsed.getTime() + parsed.getTimezoneOffset() * 60000);
     return null;
+};
+
+const formatDateDisplay = (dateStr) => {
+    const parsed = parseDate(dateStr);
+    if (!parsed) return String(dateStr || '');
+    const day = String(parsed.getDate()).padStart(2, '0');
+    const month = String(parsed.getMonth() + 1).padStart(2, '0');
+    const year = String(parsed.getFullYear());
+    return `${day}/${month}/${year}`;
 };
 
 const getDaysDiff = (dateStr) => {
@@ -280,6 +319,10 @@ const PRAZO_KEYS = [
     'Data de Prazo',
     'Data Inicio',
 ];
+const PROTOCOL_KEYS = ['NÃ‚Âº Protoc', 'NÂº Protoc', 'NÂ° Protoc', 'No Protoc', 'Numero Protoc', 'Nº Protoc', 'N° Protoc'];
+const SUBS_ENROLLMENT_KEYS = ['Mat. Subs', 'Mat Subs', 'Matricula Subs', 'MatrÃ­cula Subs', 'Matrícula Subs'];
+const MUNICIPIO_KEYS = ['NRE / MUNICIPIO', 'NRE/MUNICIPIO', 'NRE', 'Municipio'];
+const isPrazoColumn = (column) => PRAZO_KEYS.some((key) => normalizeCredentialText(key) === normalizeCredentialText(column));
 
 const getRowValue = (row, possibleKeys) => {
     if (!row || typeof row !== 'object') return '';
@@ -316,9 +359,69 @@ const getRowKey = (row, possibleKeys) => {
 
 const getPrazoValue = (row) => getRowValue(row, PRAZO_KEYS);
 const getPrazoKey = (row) => getRowKey(row, PRAZO_KEYS);
-const SHEETS_PRIORITY_COLUMNS = ['Status', 'Nome Subs', 'CARGO', 'Candidato', 'Contato Candidato', 'NRE / MUNICIPIO', 'Motivo', 'OBS:'];
+const getProtocolValue = (row) => getRowValue(row, PROTOCOL_KEYS);
+const getProtocolKey = (row) => getRowKey(row, PROTOCOL_KEYS);
+const SHEETS_PRIORITY_COLUMNS = ['Nº Protoc', 'Status', 'Nome Subs', 'CARGO', 'Candidato', 'Contato Candidato', 'NRE / MUNICIPIO', 'Motivo', 'OBS:'];
 const isBlankCell = (value) => value === undefined || value === null || String(value).trim() === '';
 const DEFAULT_SHEET_UI_PREFS = { hiddenColumns: [], widthOverrides: {}, columnOrder: [] };
+const INTERNAL_ROW_KEYS = new Set(['_id', '_isInvalid']);
+
+const buildSheetsPayload = (rows) => {
+    const safeRows = Array.isArray(rows) ? rows : [];
+    const headers = Array.from(safeRows.reduce((set, row) => {
+        Object.keys(row || {}).forEach((key) => {
+            if (!INTERNAL_ROW_KEYS.has(key)) set.add(key);
+        });
+        return set;
+    }, new Set()));
+
+    return {
+        headers,
+        rows: safeRows.map((row) => Object.fromEntries(headers.map((header) => [header, row?.[header] ?? '']))),
+    };
+};
+
+const getSheetsPayloadSnapshot = (rows) => JSON.stringify(buildSheetsPayload(rows));
+
+const getRowIdentity = (row) => {
+    const enrollmentId = String(getRowValue(row, ['Mat. Subs', 'Mat Subs', 'Matricula Subs', 'Matrícula Subs']) || '').trim();
+    const protocolId = String(getRowValue(row, ['NÂº Protoc', 'Nº Protoc', 'N° Protoc', 'No Protoc', 'Numero Protoc']) || '').trim();
+    if (enrollmentId) return `mat:${enrollmentId}`;
+    if (protocolId) return `protocol:${protocolId}`;
+    return '';
+};
+
+const getImportIdentity = (row) => {
+    const protocolId = String(getProtocolValue(row) || '').trim();
+    const enrollmentId = String(getRowValue(row, SUBS_ENROLLMENT_KEYS) || '').trim();
+    const cargo = String(getRowValue(row, ['CARGO', 'Cargo', 'cargo']) || '').trim();
+    const municipio = String(getRowValue(row, MUNICIPIO_KEYS) || '').trim();
+    const prazo = formatDateDisplay(getPrazoValue(row));
+    const motivo = String(getRowValue(row, ['Motivo', 'MOTIVO']) || '').trim();
+
+    if (protocolId) return `protocol:${protocolId}`;
+    if (enrollmentId) return `mat:${enrollmentId}|cargo:${cargo}|municipio:${municipio}|prazo:${prazo}|motivo:${motivo}`;
+    if (cargo || municipio || prazo || motivo) return `fallback:${cargo}|${municipio}|${prazo}|${motivo}`;
+    return '';
+};
+
+const hydrateRowsFromSheets = (previousRows, importedRows) => {
+    const safePreviousRows = Array.isArray(previousRows) ? previousRows : [];
+    const cleanedRows = Array.isArray(importedRows)
+        ? importedRows.filter((row) => Object.values(row || {}).some((val) => val !== null && String(val).trim() !== ''))
+        : [];
+
+    const previousIdByIdentity = new Map(
+        safePreviousRows
+            .map((row) => [getImportIdentity(row), row?._id])
+            .filter(([identity, id]) => identity && id !== undefined && id !== null),
+    );
+
+    return cleanedRows.map((row, index) => ({
+        ...row,
+        _id: previousIdByIdentity.get(getImportIdentity(row)) || `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+    }));
+};
 
 const computeImportOutcome = (previousRows, importedRows, fromSheets) => {
     const prevArray = Array.isArray(previousRows) ? previousRows : [];
@@ -367,6 +470,87 @@ const computeImportOutcome = (previousRows, importedRows, fromSheets) => {
             });
 
             mergedRows[existingIdx] = mergedRow;
+            if (hasChanges) updatedCount += 1;
+            else unchangedCount += 1;
+            return;
+        }
+
+        const preserve = {
+            Candidato: currentRow.Candidato !== 'SEM COBERTURA' ? currentRow.Candidato : newRow.Candidato,
+            Status: currentRow.Status !== 'ABERTA' ? currentRow.Status : newRow.Status,
+            'Contato Candidato': currentRow['Contato Candidato'] || newRow['Contato Candidato'],
+            'OBS:': currentRow['OBS:'] || newRow['OBS:'],
+        };
+
+        const nextRow = { ...currentRow, ...newRow, ...preserve };
+        const hasChanges = Object.keys(nextRow).some((key) => {
+            if (key === '_id' || key === '_isInvalid') return false;
+            return String(currentRow[key] ?? '') !== String(nextRow[key] ?? '');
+        });
+
+        mergedRows[existingIdx] = nextRow;
+        if (hasChanges) updatedCount += 1;
+        else unchangedCount += 1;
+    });
+
+    return {
+        mergedRows,
+        stats: {
+            totalImported: cleanedRows.length,
+            addedCount,
+            updatedCount,
+            unchangedCount,
+        },
+    };
+};
+
+const computeImportOutcomeSafe = (previousRows, importedRows, fromSheets) => {
+    const prevArray = Array.isArray(previousRows) ? previousRows : [];
+    const cleanedRows = Array.isArray(importedRows)
+        ? importedRows.filter((row) => Object.values(row || {}).some((val) => val !== null && String(val).trim() !== ''))
+        : [];
+
+    if (prevArray.length === 0) {
+        const seededRows = cleanedRows.map((row) => ({ ...row, _id: Math.random().toString(36).slice(2, 11) }));
+        return {
+            mergedRows: seededRows,
+            stats: {
+                totalImported: cleanedRows.length,
+                addedCount: seededRows.length,
+                updatedCount: 0,
+                unchangedCount: 0,
+            },
+        };
+    }
+
+    let addedCount = 0;
+    let updatedCount = 0;
+    let unchangedCount = 0;
+    const mergedRows = [...prevArray];
+
+    cleanedRows.forEach((newRow) => {
+        const newRowIdentity = getImportIdentity(newRow);
+        const existingIdx = mergedRows.findIndex((row) => {
+            const currentIdentity = getImportIdentity(row);
+            return Boolean(newRowIdentity && currentIdentity && currentIdentity === newRowIdentity);
+        });
+
+        if (existingIdx < 0) {
+            mergedRows.push({ ...newRow, _id: Math.random().toString(36).slice(2, 11) });
+            addedCount += 1;
+            return;
+        }
+
+        const currentRow = mergedRows[existingIdx];
+
+        if (fromSheets) {
+            const nextRow = { ...newRow, _id: currentRow._id };
+            const hasChanges = Object.keys({ ...currentRow, ...nextRow }).some((key) => {
+                if (key === '_id' || key === '_isInvalid') return false;
+                return String(currentRow[key] ?? '') !== String(nextRow[key] ?? '');
+            });
+
+            mergedRows[existingIdx] = nextRow;
             if (hasChanges) updatedCount += 1;
             else unchangedCount += 1;
             return;
@@ -1216,6 +1400,7 @@ export default function App() {
     const [importSummary, setImportSummary] = useState(null);
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
     const [deleteModalRecord, setDeleteModalRecord] = useState(null);
+    const [lastSheetsSyncAt, setLastSheetsSyncAt] = useState('');
 
     const [isCinematic, setIsCinematic] = useState(false);
     const [draggedSheetColumn, setDraggedSheetColumn] = useState('');
@@ -1227,6 +1412,11 @@ export default function App() {
     const sheetColumnsPanelRef = useRef(null);
     const sheetResizeStateRef = useRef(null);
     const sheetsSyncStateRef = useRef({ inFlight: false, lastAt: 0 });
+    const sheetsWriteStateRef = useRef({ inFlight: false, lastAt: 0 });
+    const initialSheetsLoadFinishedRef = useRef(false);
+    const lastDataChangeSourceRef = useRef('bootstrap');
+    const lastRemoteSnapshotRef = useRef('');
+    const autoSyncTimeoutRef = useRef(null);
     const sheetPrefsSyncTimeoutRef = useRef(null);
     const persistAccount = (account) => {
         if (!hasStoredAccount(account)) {
@@ -1505,31 +1695,74 @@ export default function App() {
     };
 
     const processDataImport = (newDataArray, fromSheets, isSilent = false, sourceLabel = fromSheets ? 'Google Sheets' : 'Arquivo Excel') => {
-        let nextSummary = null;
+        const importOutcome = fromSheets
+            ? {
+                mergedRows: hydrateRowsFromSheets(history.present, newDataArray),
+                stats: {
+                    totalImported: Array.isArray(newDataArray) ? newDataArray.filter((row) => Object.values(row || {}).some((val) => val !== null && String(val).trim() !== '')).length : 0,
+                    addedCount: 0,
+                    updatedCount: 0,
+                    unchangedCount: 0,
+                },
+            }
+            : computeImportOutcomeSafe(history.present, newDataArray, fromSheets);
+        const validatedRows = validateData(importOutcome.mergedRows);
+        const nextSummary = {
+            sourceLabel,
+            synchronizedWithSheets: fromSheets,
+            syncStatus: fromSheets ? 'success' : 'pending',
+            totalImported: importOutcome.stats.totalImported,
+            addedCount: importOutcome.stats.addedCount,
+            updatedCount: importOutcome.stats.updatedCount,
+            unchangedCount: importOutcome.stats.unchangedCount,
+            invalidCount: validatedRows.filter((row) => row._isInvalid).length,
+            totalAfterImport: validatedRows.length,
+            importedAt: new Date().toISOString(),
+        };
 
-        setAppData((prevData) => {
-            const importOutcome = computeImportOutcome(prevData, newDataArray, fromSheets);
-            const validatedRows = validateData(importOutcome.mergedRows);
-
-            nextSummary = {
-                sourceLabel,
-                synchronizedWithSheets: fromSheets,
-                totalImported: importOutcome.stats.totalImported,
-                addedCount: importOutcome.stats.addedCount,
-                updatedCount: importOutcome.stats.updatedCount,
-                unchangedCount: importOutcome.stats.unchangedCount,
-                invalidCount: validatedRows.filter((row) => row._isInvalid).length,
-                totalAfterImport: validatedRows.length,
-                importedAt: new Date().toISOString(),
-            };
-
-            return validatedRows;
-        });
+        setAppData(validatedRows, { source: fromSheets ? 'sheets' : 'local-import' });
+        if (fromSheets) setLastSheetsSyncAt(new Date().toISOString());
 
         if (!isSilent && nextSummary) setImportSummary(nextSummary);
         if (!isSilent) setLoading(false);
 
-        return nextSummary;
+        return { summary: nextSummary, rows: validatedRows };
+    };
+
+    const pushGoogleSheetsData = async (rows, { reason = 'manual' } = {}) => {
+        const writeState = sheetsWriteStateRef.current;
+        if (writeState.inFlight) return false;
+
+        const payload = buildSheetsPayload(rows);
+        const snapshot = JSON.stringify(payload);
+        if (!payload.headers.length) return false;
+
+        writeState.inFlight = true;
+        writeState.lastAt = Date.now();
+
+        try {
+            await fetch(GOOGLE_APPS_SCRIPT_URL, {
+                method: 'POST',
+                mode: 'no-cors',
+                headers: {
+                    'Content-Type': 'text/plain;charset=utf-8',
+                },
+                body: JSON.stringify({
+                    ...payload,
+                    sheetName: GOOGLE_SHEETS_TAB_NAME,
+                    reason,
+                }),
+            });
+
+            lastRemoteSnapshotRef.current = snapshot;
+            setLastSheetsSyncAt(new Date().toISOString());
+            return true;
+        } catch (error) {
+            return false;
+        } finally {
+            writeState.inFlight = false;
+            writeState.lastAt = Date.now();
+        }
     };
 
     const syncGoogleSheetsData = async ({ silent = false, force = false, showInitialLoader = false } = {}) => {
@@ -1550,7 +1783,8 @@ export default function App() {
             if (!response.ok) throw new Error('CORS');
 
             const parsed = parseCSV(await response.text());
-            const summary = processDataImport(parsed, true, silent, 'Google Sheets');
+            const { summary } = processDataImport(parsed, true, silent, 'Google Sheets');
+            initialSheetsLoadFinishedRef.current = true;
             if ((!parsed || parsed.length === 0) && !silent) setLoading(false);
 
             return summary;
@@ -1588,9 +1822,42 @@ export default function App() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
-    const setAppData = (action) => {
+    useEffect(() => {
+        const intervalId = window.setInterval(() => {
+            if (document.visibilityState !== 'visible') return;
+            if (isEditing || isQuickAddModalOpen || loading) return;
+            syncGoogleSheetsData({ silent: true, force: true });
+        }, SHEETS_ACTIVE_POLL_INTERVAL_MS);
+
+        return () => window.clearInterval(intervalId);
+    }, [isEditing, isQuickAddModalOpen, loading]);
+
+    useEffect(() => () => {
+        if (autoSyncTimeoutRef.current) window.clearTimeout(autoSyncTimeoutRef.current);
+    }, []);
+
+    useEffect(() => {
+        if (!initialSheetsLoadFinishedRef.current) return;
+        if (lastDataChangeSourceRef.current === 'sheets') return;
+
+        const snapshot = getSheetsPayloadSnapshot(data);
+        if (snapshot === lastRemoteSnapshotRef.current) return;
+
+        if (autoSyncTimeoutRef.current) window.clearTimeout(autoSyncTimeoutRef.current);
+        autoSyncTimeoutRef.current = window.setTimeout(() => {
+            pushGoogleSheetsData(data, { reason: lastDataChangeSourceRef.current || 'autosave' });
+        }, 1200);
+
+        return () => {
+            if (autoSyncTimeoutRef.current) window.clearTimeout(autoSyncTimeoutRef.current);
+        };
+    }, [data]);
+
+    const setAppData = (action, options = {}) => {
         const newPresent = typeof action === 'function' ? action(history.present) : action;
         if (JSON.stringify(newPresent) === JSON.stringify(history.present)) return;
+        lastDataChangeSourceRef.current = options.source || 'local';
+        if (lastDataChangeSourceRef.current !== 'sheets') initialSheetsLoadFinishedRef.current = true;
         setHistory((h) => ({ past: [...h.past, h.present].slice(-30), present: newPresent, future: [] }));
         setLocalData(newPresent);
     };
@@ -1600,6 +1867,7 @@ export default function App() {
             if (h.past.length === 0) return h;
             const previous = h.past[h.past.length - 1];
             const newPast = h.past.slice(0, h.past.length - 1);
+            lastDataChangeSourceRef.current = 'undo';
             setLocalData(previous);
             return { past: newPast, present: previous, future: [h.present, ...h.future] };
         });
@@ -1610,6 +1878,7 @@ export default function App() {
             if (h.future.length === 0) return h;
             const next = h.future[0];
             const newFuture = h.future.slice(1);
+            lastDataChangeSourceRef.current = 'redo';
             setLocalData(next);
             return { past: [...h.past, h.present], present: next, future: newFuture };
         });
@@ -1673,7 +1942,23 @@ export default function App() {
             const buffer = await file.arrayBuffer();
             const workbook = XLSX.read(buffer, { type: 'array' });
             const worksheet = workbook.Sheets.PAINEL || workbook.Sheets[workbook.SheetNames[0]];
-            processDataImport(XLSX.utils.sheet_to_json(worksheet, { defval: '', raw: false }), false);
+            const { summary, rows } = processDataImport(XLSX.utils.sheet_to_json(worksheet, { defval: '', raw: false }), false);
+            if (summary) {
+                setImportSummary({
+                    ...summary,
+                    syncStatus: 'pending',
+                    synchronizedWithSheets: false,
+                });
+            }
+            await new Promise((resolve) => window.setTimeout(resolve, 1400));
+            const synchronized = await pushGoogleSheetsData(rows, { reason: 'file-import' });
+            if (summary) {
+                setImportSummary({
+                    ...summary,
+                    syncStatus: synchronized ? 'success' : 'error',
+                    synchronizedWithSheets: synchronized,
+                });
+            }
         } catch (error) {
             alert('Erro de parsing.');
         } finally {
@@ -2403,7 +2688,11 @@ export default function App() {
                                                 const status = safeGet(row, 'Status');
                                                 const candidato = row.Candidato || 'SEM COBERTURA';
                                                 const prazoValue = getPrazoValue(row);
+                                                const protocolValue = String(getProtocolValue(row) || '').trim();
+                                                const cargoValue = String(getRowValue(row, ['CARGO', 'Cargo', 'cargo']) || '');
+                                                const municipioValue = String(getRowValue(row, MUNICIPIO_KEYS) || '');
                                                 const diasParaInicio = getDaysDiff(prazoValue);
+                                                const prazoDisplayValue = formatDateDisplay(prazoValue);
                                                 return (
                                                     <tr key={row._id} className={`${getRowThermalClass(diasParaInicio, status, candidato, row._isInvalid)} group anim-cascade transition-all duration-300 hover:shadow-sm`} style={{ animationDelay: `${index * 15}ms` }}>
                                                         <>
@@ -2413,9 +2702,13 @@ export default function App() {
                                                                     <option value="ABERTA">ABERTA</option><option value="FECHADA">FECHADA</option><option value="ENCAMINHADA">ENCAMINHADA</option><option value="CANCELADA">CANCELADA</option><option value="PAUSADA">PAUSADA</option>
                                                                 </select>
                                                             </td>
-                                                            <td className="px-6 py-4"><div className={`font-bold ${row._isInvalid ? 'text-red-700' : 'text-slate-900'}`}>{row['Nome Subs'] || 'FALTANDO'}</div><div className="text-slate-600 text-xs mt-0.5">{row.CARGO} • {row['NRE / MUNICIPIO']}</div></td>
+                                                            <td className="px-6 py-4">
+                                                                {protocolValue ? <div className="text-[11px] font-black uppercase tracking-wider text-indigo-700 mb-1">Protocolo {protocolValue}</div> : null}
+                                                                <div className={`font-bold ${row._isInvalid ? 'text-red-700' : 'text-slate-900'}`}>{row['Nome Subs'] || 'FALTANDO'}</div>
+                                                                <div className="text-slate-600 text-xs mt-0.5">{cargoValue} • {municipioValue}</div>
+                                                            </td>
                                                             <td className="px-6 py-4"><div className={`font-bold ${candidato === 'SEM COBERTURA' ? 'text-red-700' : 'text-slate-800'}`}>{candidato}</div><div className="text-slate-500 text-xs mt-0.5">{row['Contato Candidato'] || 'Sem contato'}</div></td>
-                                                            <td className="px-6 py-4"><div className="font-bold text-slate-800">{prazoValue || 'Sem prazo'}</div>
+                                                            <td className="px-6 py-4"><div className="font-bold text-slate-800">{prazoDisplayValue || 'Sem prazo'}</div>
                                                                 {diasParaInicio !== null && !['FECHADA', 'ENCAMINHADA', 'CANCELADA'].includes(status) && candidato === 'SEM COBERTURA' && (
                                                                     <div className={`text-xs mt-1 font-bold inline-block px-2 py-0.5 rounded shadow-sm transition-transform group-hover:scale-105 ${diasParaInicio < 0 ? 'bg-red-600 text-white' : diasParaInicio === 0 ? 'bg-red-500 text-white' : diasParaInicio <= 5 ? 'bg-orange-500 text-white' : diasParaInicio <= 15 ? 'bg-yellow-400 text-yellow-900' : diasParaInicio <= 30 ? 'bg-lime-500 text-lime-900' : 'bg-green-500 text-white'}`}>
                                                                         {diasParaInicio < 0 ? `Atrasado ${Math.abs(diasParaInicio)}d` : diasParaInicio === 0 ? 'E Hoje!' : `Faltam ${diasParaInicio}d`}
@@ -2770,7 +3063,7 @@ export default function App() {
                                 <h3 className="text-lg font-black text-slate-800">Resumo da importacao</h3>
                                 <p className="text-sm text-slate-600 mt-0.5">Origem: <span className="font-bold text-slate-800">{importSummary.sourceLabel}</span></p>
                             </div>
-                            <button onClick={() => setImportSummary(null)} className="text-slate-400 hover:text-slate-700 transition-colors" type="button"><X className="w-5 h-5" /></button>
+                            <button onClick={() => setImportSummary(null)} disabled={importSummary.syncStatus === 'pending'} className="text-slate-400 hover:text-slate-700 transition-colors disabled:opacity-30 disabled:cursor-not-allowed" type="button"><X className="w-5 h-5" /></button>
                         </div>
 
                         <div className="px-6 py-5 space-y-4 bg-white">
@@ -2804,22 +3097,30 @@ export default function App() {
                                 </div>
                                 <div className="flex items-center justify-between gap-3">
                                     <span className="text-sm font-bold text-slate-700">Google Sheets</span>
-                                    <span className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-black ${importSummary.synchronizedWithSheets ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
-                                        {importSummary.synchronizedWithSheets ? <CheckCircle2 className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
-                                        {importSummary.synchronizedWithSheets ? 'Sincronizado agora' : 'Importacao local somente'}
+                                    <span className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-black ${importSummary.syncStatus === 'pending' ? 'bg-sky-100 text-sky-800' : importSummary.synchronizedWithSheets ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                                        {importSummary.syncStatus === 'pending' ? <LoaderCircle className="w-4 h-4 animate-spin" /> : importSummary.synchronizedWithSheets ? <CheckCircle2 className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
+                                        {importSummary.syncStatus === 'pending' ? 'Sincronizando...' : importSummary.synchronizedWithSheets ? 'Sincronizado agora' : 'Falha ao sincronizar'}
                                     </span>
                                 </div>
+                                {lastSheetsSyncAt && (
+                                    <div className="flex items-center justify-between gap-3">
+                                        <span className="text-sm font-bold text-slate-700">Ultima atualizacao online</span>
+                                        <span className="text-xs font-black text-slate-600">{new Date(lastSheetsSyncAt).toLocaleString('pt-BR')}</span>
+                                    </div>
+                                )}
                             </div>
 
-                            <p className={`text-sm leading-relaxed ${importSummary.synchronizedWithSheets ? 'text-emerald-700' : 'text-amber-700'}`}>
-                                {importSummary.synchronizedWithSheets
-                                    ? 'Os dados foram atualizados a partir do Google Sheets e a base exibida ja esta alinhada com a planilha online.'
-                                    : 'Os dados foram importados para o sistema, mas esta importacao ainda nao grava automaticamente no Google Sheets.'}
+                            <p className={`text-sm leading-relaxed ${importSummary.syncStatus === 'pending' ? 'text-sky-700' : importSummary.synchronizedWithSheets ? 'text-emerald-700' : 'text-amber-700'}`}>
+                                {importSummary.syncStatus === 'pending'
+                                    ? 'A importacao foi concluida e o sistema esta aguardando a gravacao na planilha online. Aguarde alguns segundos.'
+                                    : importSummary.synchronizedWithSheets
+                                        ? 'Os dados foram gravados na planilha online e os outros usuarios ativos vao receber a atualizacao automaticamente.'
+                                        : 'Nao foi possivel confirmar a gravacao online agora. Revise a conexao e tente novamente.'}
                             </p>
                         </div>
 
                         <div className="px-6 py-4 border-t bg-slate-50 flex items-center justify-end gap-3">
-                            <button onClick={() => setImportSummary(null)} className="px-5 py-2.5 rounded-xl bg-slate-900 text-white font-bold hover:bg-slate-800 shadow-md active:scale-95 transition-all" type="button">Fechar resumo</button>
+                            <button onClick={() => setImportSummary(null)} disabled={importSummary.syncStatus === 'pending'} className="px-5 py-2.5 rounded-xl bg-slate-900 text-white font-bold hover:bg-slate-800 shadow-md active:scale-95 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100" type="button">{importSummary.syncStatus === 'pending' ? 'Aguarde a sincronizacao' : 'Fechar resumo'}</button>
                         </div>
                     </div>
                 </div>
@@ -2970,6 +3271,7 @@ export default function App() {
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
                                             {detailedColumns.map((column) => {
                                                 const fieldValue = String(selectedRecord?.[column] || '');
+                                                const displayValue = isPrazoColumn(column) ? formatDateDisplay(fieldValue) : fieldValue;
                                                 const isEmpty = !fieldValue.trim();
                                                 const isStatusField = normalizeCredentialText(column) === 'status';
                                                 return (
