@@ -37,10 +37,13 @@ const STATUS_ACCENT = {
     PAUSADA: 'bg-yellow-400',
 };
 
-const GOOGLE_SHEETS_URL = 'https://docs.google.com/spreadsheets/d/1hmLkIX2B4rh6NDtJUXOhtjdXhddozqPs9uMTzaTeBsk/edit?usp=sharing';
-const GOOGLE_SHEETS_CSV_EXPORT = 'https://docs.google.com/spreadsheets/d/1hmLkIX2B4rh6NDtJUXOhtjdXhddozqPs9uMTzaTeBsk/export?format=csv';
+const GOOGLE_SHEETS_ID = '1hmLkIX2B4rh6NDtJUXOhtjdXhddozqPs9uMTzaTeBsk';
+const GOOGLE_SHEETS_URL = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEETS_ID}/edit?usp=sharing`;
+const GOOGLE_SHEETS_CSV_EXPORT = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEETS_ID}/export?format=csv`;
+const GOOGLE_SHEETS_GVIZ_URL = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEETS_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent('PAINEL')}`;
 const GOOGLE_SHEETS_TAB_NAME = 'PAINEL';
 const GOOGLE_APPS_SCRIPT_URL = import.meta.env.VITE_GOOGLE_APPS_SCRIPT_URL || 'https://script.google.com/macros/s/AKfycbzddulxFwzjY5YTdJ1fpPZXqIov3Go6xc6srSUiRzmJzI-KVgpUySWCdCljLa5zxXnH/exec';
+const APP_DATA_STORAGE_KEY = 'vagas_app_data_v2_protocol';
 const AUTH_ACCESS_KEY = 'Plansul@2025';
 const AUTH_SESSION_DURATION_MS = 24 * 60 * 60 * 1000;
 const AUTH_DB_STORAGE_KEY = 'vagas_internal_account_excel_encrypted';
@@ -51,7 +54,7 @@ const GRID_PAGE_SIZE = 200;
 const SHEETS_PAGE_SIZE = 120;
 const SHEETS_AUTO_SYNC_COOLDOWN_MS = 45000;
 const SHEETS_ACTIVE_POLL_INTERVAL_MS = 20000;
-const REQUIRED_FIELDS = ['Nome Subs', 'Status'];
+const REQUIRED_FIELDS = ['Nº Protoc', 'Nome Subs', 'Status'];
 
 const encodeBase64 = (arrayBuffer) => {
     const bytes = new Uint8Array(arrayBuffer);
@@ -243,6 +246,46 @@ const parseCSV = (text) => {
     return result;
 };
 
+const parseGoogleVisualizationResponse = (rawText) => {
+    const text = String(rawText || '').trim();
+    const startIndex = text.indexOf('{');
+    const endIndex = text.lastIndexOf('}');
+    if (startIndex < 0 || endIndex <= startIndex) throw new Error('GVIZ_PARSE_ERROR');
+    return JSON.parse(text.slice(startIndex, endIndex + 1));
+};
+
+const parseGoogleVisualizationRows = (payload) => {
+    const table = payload?.table;
+    const columns = Array.isArray(table?.cols) ? table.cols : [];
+    const rows = Array.isArray(table?.rows) ? table.rows : [];
+    const headers = columns.map((column, index) => canonicalizeHeaderLabel(column?.label || '', index));
+
+    return rows.map((row) => {
+        const cells = Array.isArray(row?.c) ? row.c : [];
+        return headers.reduce((acc, header, index) => {
+            const cell = cells[index];
+            if (!header) return acc;
+            const formattedValue = cell?.f;
+            const rawValue = cell?.v;
+            acc[header] = formattedValue ?? rawValue ?? '';
+            return acc;
+        }, {});
+    });
+};
+
+const fetchGoogleSheetPanelRows = async () => {
+    try {
+        const response = await fetch(`${GOOGLE_SHEETS_GVIZ_URL}&t=${Date.now()}`);
+        if (!response.ok) throw new Error('GVIZ_FETCH_FAILED');
+        const payload = parseGoogleVisualizationResponse(await response.text());
+        return normalizeIncomingRows(parseGoogleVisualizationRows(payload));
+    } catch (error) {
+        const fallbackResponse = await fetch(GOOGLE_SHEETS_CSV_EXPORT);
+        if (!fallbackResponse.ok) throw error;
+        return normalizeIncomingRows(parseCSV(await fallbackResponse.text()));
+    }
+};
+
 function useLocalStorage(key, initialValue) {
     const [storedValue, setStoredValue] = useState(() => {
         if (typeof window === 'undefined') return initialValue;
@@ -322,6 +365,24 @@ const PRAZO_KEYS = [
 const PROTOCOL_KEYS = ['NÃ‚Âº Protoc', 'NÂº Protoc', 'NÂ° Protoc', 'No Protoc', 'Numero Protoc', 'Nº Protoc', 'N° Protoc'];
 const SUBS_ENROLLMENT_KEYS = ['Mat. Subs', 'Mat Subs', 'Matricula Subs', 'MatrÃ­cula Subs', 'Matrícula Subs'];
 const MUNICIPIO_KEYS = ['NRE / MUNICIPIO', 'NRE/MUNICIPIO', 'NRE', 'Municipio'];
+const STATUS_KEYS = ['Status', 'STATUS'];
+const NAME_KEYS = ['Nome Subs', 'NOME SUBS'];
+const MOTIVO_KEYS = ['Motivo', 'MOTIVO'];
+const CANDIDATE_KEYS = ['Candidato', 'CANDIDATO'];
+const CANDIDATE_CONTACT_KEYS = ['Contato Candidato', 'CONTATO CANDIDATO'];
+const CARGO_KEYS = ['CARGO', 'Cargo', 'cargo'];
+const MONTH_REFERENCE_KEYS = ['Mês ref.', 'Mes ref.', 'MES REF.', 'MÃªs ref.'];
+const CANONICAL_COLUMN_ALIASES = {
+    'Nº Protoc': [...PROTOCOL_KEYS, 'Nº Protoc'],
+    Status: STATUS_KEYS,
+    'Nome Subs': NAME_KEYS,
+    Motivo: MOTIVO_KEYS,
+    Candidato: CANDIDATE_KEYS,
+    'Contato Candidato': CANDIDATE_CONTACT_KEYS,
+    CARGO: CARGO_KEYS,
+    'NRE / MUNICIPIO': MUNICIPIO_KEYS,
+    'Mês ref.': MONTH_REFERENCE_KEYS,
+};
 const isPrazoColumn = (column) => PRAZO_KEYS.some((key) => normalizeCredentialText(key) === normalizeCredentialText(column));
 
 const getRowValue = (row, possibleKeys) => {
@@ -359,21 +420,72 @@ const getRowKey = (row, possibleKeys) => {
 
 const getPrazoValue = (row) => getRowValue(row, PRAZO_KEYS);
 const getPrazoKey = (row) => getRowKey(row, PRAZO_KEYS);
-const getProtocolValue = (row) => getRowValue(row, PROTOCOL_KEYS);
-const getProtocolKey = (row) => getRowKey(row, PROTOCOL_KEYS);
+const getProtocolValue = (row) => getRowValue(row, CANONICAL_COLUMN_ALIASES['Nº Protoc']);
+const getProtocolKey = (row) => getRowKey(row, CANONICAL_COLUMN_ALIASES['Nº Protoc']);
+const getStatusValue = (row) => String(getRowValue(row, STATUS_KEYS) || '').trim().toUpperCase();
+const getNameValue = (row) => String(getRowValue(row, NAME_KEYS) || '').trim();
+const getMotivoValue = (row) => String(getRowValue(row, MOTIVO_KEYS) || '').trim();
+const getCandidateValue = (row) => String(getRowValue(row, CANDIDATE_KEYS) || '').trim();
+const getCandidateContactValue = (row) => String(getRowValue(row, CANDIDATE_CONTACT_KEYS) || '').trim();
+const getCargoValue = (row) => String(getRowValue(row, CARGO_KEYS) || '').trim();
+const getMunicipioValue = (row) => String(getRowValue(row, MUNICIPIO_KEYS) || '').trim();
+const normalizeProtocolText = (value) => String(value || '').replace(/\D+/g, '').trim();
+const getProtocolToken = (row) => normalizeProtocolText(getProtocolValue(row));
+const canonicalizeHeaderLabel = (header, index) => {
+    const safeHeader = String(header ?? '').trim();
+    if (!safeHeader) return `Coluna${index + 1}`;
+
+    const normalizedHeader = normalizeCredentialText(safeHeader);
+    for (const [canonical, aliases] of Object.entries(CANONICAL_COLUMN_ALIASES)) {
+        if (aliases.some((alias) => normalizeCredentialText(alias) === normalizedHeader)) return canonical;
+    }
+
+    return safeHeader;
+};
+
+const normalizeIncomingRow = (row) => {
+    const safeRow = row && typeof row === 'object' ? row : {};
+    return Object.entries(safeRow).reduce((acc, [key, value], index) => {
+        const canonicalKey = canonicalizeHeaderLabel(key, index);
+        const nextValue = value === undefined || value === null ? '' : value;
+        if (!Object.prototype.hasOwnProperty.call(acc, canonicalKey) || String(acc[canonicalKey] || '').trim() === '') {
+            acc[canonicalKey] = nextValue;
+        }
+        return acc;
+    }, {});
+};
+
+const normalizeIncomingRows = (rows) => (Array.isArray(rows) ? rows.map(normalizeIncomingRow) : []);
+const getValueByColumn = (row, column) => {
+    const normalizedColumn = normalizeCredentialText(column);
+    if (normalizedColumn === normalizeCredentialText('Nº Protoc')) return getProtocolValue(row);
+    if (normalizedColumn === normalizeCredentialText('Status')) return getStatusValue(row);
+    if (normalizedColumn === normalizeCredentialText('Nome Subs')) return getNameValue(row);
+    if (normalizedColumn === normalizeCredentialText('Motivo')) return getMotivoValue(row);
+    if (normalizedColumn === normalizeCredentialText('Candidato')) return getCandidateValue(row);
+    if (normalizedColumn === normalizeCredentialText('Contato Candidato')) return getCandidateContactValue(row);
+    if (normalizedColumn === normalizeCredentialText('CARGO')) return getCargoValue(row);
+    if (normalizedColumn === normalizeCredentialText('NRE / MUNICIPIO')) return getMunicipioValue(row);
+    if (isPrazoColumn(column)) return getPrazoValue(row);
+    return getRowValue(row, [column]);
+};
 const SHEETS_PRIORITY_COLUMNS = ['Nº Protoc', 'Status', 'Nome Subs', 'CARGO', 'Candidato', 'Contato Candidato', 'NRE / MUNICIPIO', 'Motivo', 'OBS:'];
 const isBlankCell = (value) => value === undefined || value === null || String(value).trim() === '';
 const DEFAULT_SHEET_UI_PREFS = { hiddenColumns: [], widthOverrides: {}, columnOrder: [] };
-const INTERNAL_ROW_KEYS = new Set(['_id', '_isInvalid']);
+const INTERNAL_ROW_KEYS = new Set(['_id', '_isInvalid', '_protocolToken', '_validationIssues', '_hasProtocolConflict']);
 
 const buildSheetsPayload = (rows) => {
     const safeRows = Array.isArray(rows) ? rows : [];
-    const headers = Array.from(safeRows.reduce((set, row) => {
+    const discoveredHeaders = Array.from(safeRows.reduce((set, row) => {
         Object.keys(row || {}).forEach((key) => {
             if (!INTERNAL_ROW_KEYS.has(key)) set.add(key);
         });
         return set;
     }, new Set()));
+    const headers = [
+        ...SHEETS_PRIORITY_COLUMNS.filter((header) => discoveredHeaders.includes(header)),
+        ...discoveredHeaders.filter((header) => !SHEETS_PRIORITY_COLUMNS.includes(header)),
+    ];
 
     return {
         headers,
@@ -392,17 +504,8 @@ const getRowIdentity = (row) => {
 };
 
 const getImportIdentity = (row) => {
-    const protocolId = String(getProtocolValue(row) || '').trim();
-    const enrollmentId = String(getRowValue(row, SUBS_ENROLLMENT_KEYS) || '').trim();
-    const cargo = String(getRowValue(row, ['CARGO', 'Cargo', 'cargo']) || '').trim();
-    const municipio = String(getRowValue(row, MUNICIPIO_KEYS) || '').trim();
-    const prazo = formatDateDisplay(getPrazoValue(row));
-    const motivo = String(getRowValue(row, ['Motivo', 'MOTIVO']) || '').trim();
-
-    if (protocolId) return `protocol:${protocolId}`;
-    if (enrollmentId) return `mat:${enrollmentId}|cargo:${cargo}|municipio:${municipio}|prazo:${prazo}|motivo:${motivo}`;
-    if (cargo || municipio || prazo || motivo) return `fallback:${cargo}|${municipio}|${prazo}|${motivo}`;
-    return '';
+    const protocolId = getProtocolToken(row);
+    return protocolId ? `protocol:${protocolId}` : '';
 };
 
 const hydrateRowsFromSheets = (previousRows, importedRows) => {
@@ -557,10 +660,10 @@ const computeImportOutcomeSafe = (previousRows, importedRows, fromSheets) => {
         }
 
         const preserve = {
-            Candidato: currentRow.Candidato !== 'SEM COBERTURA' ? currentRow.Candidato : newRow.Candidato,
-            Status: currentRow.Status !== 'ABERTA' ? currentRow.Status : newRow.Status,
-            'Contato Candidato': currentRow['Contato Candidato'] || newRow['Contato Candidato'],
-            'OBS:': currentRow['OBS:'] || newRow['OBS:'],
+            Candidato: getCandidateValue(currentRow) && getCandidateValue(currentRow) !== 'SEM COBERTURA' ? getCandidateValue(currentRow) : getCandidateValue(newRow),
+            Status: getStatusValue(currentRow) && getStatusValue(currentRow) !== 'ABERTA' ? getStatusValue(currentRow) : getStatusValue(newRow),
+            'Contato Candidato': getCandidateContactValue(currentRow) || getCandidateContactValue(newRow),
+            'OBS:': String(getRowValue(currentRow, ['OBS:']) || '').trim() || String(getRowValue(newRow, ['OBS:']) || '').trim(),
         };
 
         const nextRow = { ...currentRow, ...newRow, ...preserve };
@@ -1337,7 +1440,7 @@ const LoginOverlay = ({ account, onCreateAccount, onLogin, notice }) => {
 };
 
 export default function App() {
-    const [localDataRaw, setLocalData] = useLocalStorage('vagas_app_data', []);
+    const [localDataRaw, setLocalData] = useLocalStorage(APP_DATA_STORAGE_KEY, []);
     const localData = Array.isArray(localDataRaw) ? localDataRaw : [];
 
     const [history, setHistory] = useState({ past: [], present: localData, future: [] });
@@ -1695,17 +1798,18 @@ export default function App() {
     };
 
     const processDataImport = (newDataArray, fromSheets, isSilent = false, sourceLabel = fromSheets ? 'Google Sheets' : 'Arquivo Excel') => {
+        const normalizedRows = normalizeIncomingRows(newDataArray);
         const importOutcome = fromSheets
             ? {
-                mergedRows: hydrateRowsFromSheets(history.present, newDataArray),
+                mergedRows: hydrateRowsFromSheets(history.present, normalizedRows),
                 stats: {
-                    totalImported: Array.isArray(newDataArray) ? newDataArray.filter((row) => Object.values(row || {}).some((val) => val !== null && String(val).trim() !== '')).length : 0,
-                    addedCount: 0,
+                    totalImported: Array.isArray(normalizedRows) ? normalizedRows.filter((row) => Object.values(row || {}).some((val) => val !== null && String(val).trim() !== '')).length : 0,
+                    addedCount: Array.isArray(normalizedRows) ? normalizedRows.length : 0,
                     updatedCount: 0,
                     unchangedCount: 0,
                 },
             }
-            : computeImportOutcomeSafe(history.present, newDataArray, fromSheets);
+            : computeImportOutcomeSafe(history.present, normalizedRows, fromSheets);
         const validatedRows = validateData(importOutcome.mergedRows);
         const nextSummary = {
             sourceLabel,
@@ -1721,7 +1825,10 @@ export default function App() {
         };
 
         setAppData(validatedRows, { source: fromSheets ? 'sheets' : 'local-import' });
-        if (fromSheets) setLastSheetsSyncAt(new Date().toISOString());
+        if (fromSheets) {
+            lastRemoteSnapshotRef.current = getSheetsPayloadSnapshot(validatedRows);
+            setLastSheetsSyncAt(new Date().toISOString());
+        }
 
         if (!isSilent && nextSummary) setImportSummary(nextSummary);
         if (!isSilent) setLoading(false);
@@ -1779,10 +1886,7 @@ export default function App() {
         if (showInitialLoader) setIsInitialSyncing(true);
 
         try {
-            const response = await fetch(GOOGLE_SHEETS_CSV_EXPORT);
-            if (!response.ok) throw new Error('CORS');
-
-            const parsed = parseCSV(await response.text());
+            const parsed = await fetchGoogleSheetPanelRows();
             const { summary } = processDataImport(parsed, true, silent, 'Google Sheets');
             initialSheetsLoadFinishedRef.current = true;
             if ((!parsed || parsed.length === 0) && !silent) setLoading(false);
@@ -1919,13 +2023,28 @@ export default function App() {
 
     const validateData = (rows) => {
         const safeRows = Array.isArray(rows) ? rows : [];
+        const protocolCounts = safeRows.reduce((acc, row) => {
+            const protocol = getProtocolToken(row);
+            if (protocol) acc.set(protocol, (acc.get(protocol) || 0) + 1);
+            return acc;
+        }, new Map());
 
-        return safeRows
-            .filter((row) => String(getRowValue(row, ['Nome Subs'])).trim() !== '')
-            .map((row) => ({
+        return safeRows.map((row) => {
+            const validationIssues = [];
+            const protocol = getProtocolToken(row);
+            if (!protocol) validationIssues.push('missing_protocol');
+            else if ((protocolCounts.get(protocol) || 0) > 1) validationIssues.push('duplicate_protocol');
+            if (!getNameValue(row)) validationIssues.push('missing_name');
+            if (!getStatusValue(row)) validationIssues.push('missing_status');
+
+            return {
                 ...row,
-                _isInvalid: String(getRowValue(row, ['Status'])).trim() === '',
-            }));
+                _protocolToken: protocol,
+                _validationIssues: validationIssues,
+                _hasProtocolConflict: validationIssues.includes('duplicate_protocol'),
+                _isInvalid: validationIssues.length > 0,
+            };
+        });
     };
 
     const handleGoogleSheetsSync = async () => {
@@ -1941,7 +2060,7 @@ export default function App() {
         try {
             const buffer = await file.arrayBuffer();
             const workbook = XLSX.read(buffer, { type: 'array' });
-            const worksheet = workbook.Sheets.PAINEL || workbook.Sheets[workbook.SheetNames[0]];
+            const worksheet = workbook.Sheets[GOOGLE_SHEETS_TAB_NAME] || workbook.Sheets[workbook.SheetNames[0]];
             const { summary, rows } = processDataImport(XLSX.utils.sheet_to_json(worksheet, { defval: '', raw: false }), false);
             if (summary) {
                 setImportSummary({
@@ -2111,7 +2230,7 @@ export default function App() {
     };
 
     const availableColumns = useMemo(
-        () => (data.length === 0 ? [] : Object.keys(data[0]).filter((k) => !['_id', '_isInvalid'].includes(k) && data[0][k] !== undefined)),
+        () => (data.length === 0 ? [] : Object.keys(data[0]).filter((k) => !INTERNAL_ROW_KEYS.has(k) && data[0][k] !== undefined)),
         [data],
     );
 
@@ -2120,9 +2239,9 @@ export default function App() {
         const mt = new Set();
         const s = new Set();
         data.forEach((i) => {
-            if (i['NRE / MUNICIPIO']) m.add(String(i['NRE / MUNICIPIO']).trim());
-            if (i.Motivo) mt.add(String(i.Motivo).trim());
-            if (i.Status) s.add(String(i.Status).trim().toUpperCase());
+            if (getMunicipioValue(i)) m.add(getMunicipioValue(i));
+            if (getMotivoValue(i)) mt.add(getMotivoValue(i));
+            if (getStatusValue(i)) s.add(getStatusValue(i));
         });
         return { municipios: Array.from(m).sort(), motivos: Array.from(mt).sort(), status: Array.from(s).sort() };
     }, [data]);
@@ -2132,7 +2251,7 @@ export default function App() {
         const invalidCount = data.filter((d) => d._isInvalid).length;
         const generateChartData = (groupBy, limit = 10) => Object.entries(
             data.reduce((acc, curr) => {
-                const v = curr[groupBy] ? String(curr[groupBy]).trim() : 'NAO INFORMADO';
+                const v = String(getValueByColumn(curr, groupBy) || '').trim() || 'NAO INFORMADO';
                 if (v && v !== 'NAO INFORMADO') acc[v] = (acc[v] || 0) + 1;
                 return acc;
             }, {}),
@@ -2144,9 +2263,9 @@ export default function App() {
         return {
             total: data.length,
             invalidCount,
-            abertas: data.filter((d) => safeGet(d, 'Status') === 'ABERTA').length,
-            fechadas: data.filter((d) => safeGet(d, 'Status') === 'FECHADA').length,
-            semCobertura: data.filter((d) => safeGet(d, 'Candidato') === 'SEM COBERTURA' || !d.Candidato).length,
+            abertas: data.filter((d) => getStatusValue(d) === 'ABERTA').length,
+            fechadas: data.filter((d) => getStatusValue(d) === 'FECHADA').length,
+            semCobertura: data.filter((d) => getCandidateValue(d) === 'SEM COBERTURA' || !getCandidateValue(d)).length,
             statusChartData: generateChartData('Status'),
             motivoChartData: generateChartData('Motivo', 5),
             generateChartData,
@@ -2156,9 +2275,9 @@ export default function App() {
     const filteredData = useMemo(() => {
         const filtered = data.filter((item) => {
             if (showErrorsOnly) return item._isInvalid;
-            const mSearch = Object.values(item).some((val) => String(val).toLowerCase().includes(searchTerm.toLowerCase()));
-            const mStatus = filters.status === 'TODOS' || safeGet(item, 'Status') === filters.status;
-            const mMun = filters.municipio === 'TODOS' || String(item['NRE / MUNICIPIO'] || '').trim() === filters.municipio;
+            const mSearch = Object.entries(item).some(([key, val]) => !INTERNAL_ROW_KEYS.has(key) && String(val).toLowerCase().includes(searchTerm.toLowerCase()));
+            const mStatus = filters.status === 'TODOS' || getStatusValue(item) === filters.status;
+            const mMun = filters.municipio === 'TODOS' || getMunicipioValue(item) === filters.municipio;
             let mUrg = true;
             if (filters.urgencia !== 'TODOS') {
                 const dias = getDaysDiff(getPrazoValue(item));
@@ -2166,14 +2285,14 @@ export default function App() {
                 if (filters.urgencia === 'MEDIA') mUrg = dias === null || (dias > 5 && dias <= 30);
                 if (filters.urgencia === 'LONGE') mUrg = dias !== null && dias > 30;
             }
-            return mSearch && mStatus && mMun && mUrg && (filters.motivo === 'TODOS' || String(item.Motivo || '').trim() === filters.motivo);
+            return mSearch && mStatus && mMun && mUrg && (filters.motivo === 'TODOS' || getMotivoValue(item) === filters.motivo);
         });
 
         return filtered.sort((a, b) => {
             if (a._isInvalid && !b._isInvalid) return -1;
             if (!a._isInvalid && b._isInvalid) return 1;
-            const isResA = ['FECHADA', 'ENCAMINHADA', 'CANCELADA'].includes(safeGet(a, 'Status')) || (a.Candidato && a.Candidato !== 'SEM COBERTURA');
-            const isResB = ['FECHADA', 'ENCAMINHADA', 'CANCELADA'].includes(safeGet(b, 'Status')) || (b.Candidato && b.Candidato !== 'SEM COBERTURA');
+            const isResA = ['FECHADA', 'ENCAMINHADA', 'CANCELADA'].includes(getStatusValue(a)) || (getCandidateValue(a) && getCandidateValue(a) !== 'SEM COBERTURA');
+            const isResB = ['FECHADA', 'ENCAMINHADA', 'CANCELADA'].includes(getStatusValue(b)) || (getCandidateValue(b) && getCandidateValue(b) !== 'SEM COBERTURA');
             if (!isResA && isResB) return -1;
             if (isResA && !isResB) return 1;
             if (!isResA && !isResB) {
@@ -2189,7 +2308,7 @@ export default function App() {
 
     const sheetsColumns = useMemo(() => {
         const allColumns = Array.from(new Set(filteredData.flatMap((row) => Object.keys(row || {}))))
-            .filter((column) => !['_id', '_isInvalid'].includes(column));
+            .filter((column) => !INTERNAL_ROW_KEYS.has(column));
 
         const prioritized = SHEETS_PRIORITY_COLUMNS.filter((column) => allColumns.includes(column));
         const others = allColumns.filter((column) => !SHEETS_PRIORITY_COLUMNS.includes(column)).sort((a, b) => a.localeCompare(b));
@@ -2207,7 +2326,7 @@ export default function App() {
     const detailedColumns = useMemo(() => {
         if (sheetsColumns.length > 0) return sheetsColumns;
         if (selectedRecord && typeof selectedRecord === 'object') {
-            return Object.keys(selectedRecord).filter((column) => !['_id', '_isInvalid'].includes(column));
+            return Object.keys(selectedRecord).filter((column) => !INTERNAL_ROW_KEYS.has(column));
         }
         return SHEETS_PRIORITY_COLUMNS;
     }, [selectedRecord, sheetsColumns]);
@@ -2685,12 +2804,19 @@ export default function App() {
                                         </thead>
                                         <tbody id="tour-table" key={tableAnimationKey} className="divide-y divide-slate-200/50">
                                             {gridPagedData.map((row, index) => {
-                                                const status = safeGet(row, 'Status');
-                                                const candidato = row.Candidato || 'SEM COBERTURA';
+                                                const status = getStatusValue(row);
+                                                const candidato = getCandidateValue(row) || 'SEM COBERTURA';
                                                 const prazoValue = getPrazoValue(row);
                                                 const protocolValue = String(getProtocolValue(row) || '').trim();
-                                                const cargoValue = String(getRowValue(row, ['CARGO', 'Cargo', 'cargo']) || '');
-                                                const municipioValue = String(getRowValue(row, MUNICIPIO_KEYS) || '');
+                                                const cargoValue = getCargoValue(row);
+                                                const municipioValue = getMunicipioValue(row);
+                                                const candidateContactValue = getCandidateContactValue(row);
+                                                const rowDisplayName = getNameValue(row) || 'FALTANDO';
+                                                const protocolIssueLabel = row._validationIssues?.includes('duplicate_protocol')
+                                                    ? 'Protocolo duplicado'
+                                                    : row._validationIssues?.includes('missing_protocol')
+                                                        ? 'Protocolo obrigatorio'
+                                                        : '';
                                                 const diasParaInicio = getDaysDiff(prazoValue);
                                                 const prazoDisplayValue = formatDateDisplay(prazoValue);
                                                 return (
@@ -2704,10 +2830,12 @@ export default function App() {
                                                             </td>
                                                             <td className="px-6 py-4">
                                                                 {protocolValue ? <div className="text-[11px] font-black uppercase tracking-wider text-indigo-700 mb-1">Protocolo {protocolValue}</div> : null}
-                                                                <div className={`font-bold ${row._isInvalid ? 'text-red-700' : 'text-slate-900'}`}>{row['Nome Subs'] || 'FALTANDO'}</div>
+                                                                {!protocolValue && protocolIssueLabel ? <div className="text-[11px] font-black uppercase tracking-wider text-red-700 mb-1">{protocolIssueLabel}</div> : null}
+                                                                <div className={`font-bold ${row._isInvalid ? 'text-red-700' : 'text-slate-900'}`}>{rowDisplayName}</div>
                                                                 <div className="text-slate-600 text-xs mt-0.5">{cargoValue} • {municipioValue}</div>
+                                                                {protocolValue && protocolIssueLabel ? <div className="text-[11px] font-bold text-red-700 mt-1">{protocolIssueLabel}</div> : null}
                                                             </td>
-                                                            <td className="px-6 py-4"><div className={`font-bold ${candidato === 'SEM COBERTURA' ? 'text-red-700' : 'text-slate-800'}`}>{candidato}</div><div className="text-slate-500 text-xs mt-0.5">{row['Contato Candidato'] || 'Sem contato'}</div></td>
+                                                            <td className="px-6 py-4"><div className={`font-bold ${candidato === 'SEM COBERTURA' ? 'text-red-700' : 'text-slate-800'}`}>{candidato}</div><div className="text-slate-500 text-xs mt-0.5">{candidateContactValue || 'Sem contato'}</div></td>
                                                             <td className="px-6 py-4"><div className="font-bold text-slate-800">{prazoDisplayValue || 'Sem prazo'}</div>
                                                                 {diasParaInicio !== null && !['FECHADA', 'ENCAMINHADA', 'CANCELADA'].includes(status) && candidato === 'SEM COBERTURA' && (
                                                                     <div className={`text-xs mt-1 font-bold inline-block px-2 py-0.5 rounded shadow-sm transition-transform group-hover:scale-105 ${diasParaInicio < 0 ? 'bg-red-600 text-white' : diasParaInicio === 0 ? 'bg-red-500 text-white' : diasParaInicio <= 5 ? 'bg-orange-500 text-white' : diasParaInicio <= 15 ? 'bg-yellow-400 text-yellow-900' : diasParaInicio <= 30 ? 'bg-lime-500 text-lime-900' : 'bg-green-500 text-white'}`}>
