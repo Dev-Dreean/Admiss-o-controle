@@ -246,8 +246,6 @@ const parseCSV = (text) => {
     return result;
 };
 
-const looksLikeHtmlDocument = (text) => /<html|<!doctype html/i.test(String(text || ''));
-
 const parseGoogleVisualizationResponse = (rawText) => {
     const text = String(rawText || '').trim();
     const startIndex = text.indexOf('{');
@@ -310,24 +308,20 @@ const fetchGoogleSheetPanelRowsViaJsonp = () => new Promise((resolve, reject) =>
         reject(new Error('JSONP_LOAD_ERROR'));
     };
     script.src = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEETS_ID}/gviz/tq?tqx=out:json;responseHandler:${callbackName}&sheet=${encodeURIComponent(GOOGLE_SHEETS_TAB_NAME)}&t=${Date.now()}`;
-    (document.body || document.head || document.documentElement).appendChild(script);
+    document.body.appendChild(script);
 });
 
 const fetchGoogleSheetPanelRows = async () => {
     try {
-        const rows = await fetchGoogleSheetPanelRowsViaJsonp();
+        const response = await fetch(`${GOOGLE_SHEETS_CSV_EXPORT}&t=${Date.now()}`);
+        if (!response.ok) throw new Error('CSV_FETCH_FAILED');
+        const rows = normalizeIncomingRows(parseCSV(await response.text()));
         if (rows.length > 0) return rows;
     } catch (error) {
         // fallback below
     }
 
-    const response = await fetch(`${GOOGLE_SHEETS_CSV_EXPORT}&t=${Date.now()}`);
-    if (!response.ok) throw new Error('CSV_FETCH_FAILED');
-    const text = await response.text();
-    if (looksLikeHtmlDocument(text)) throw new Error('CSV_RETURNED_HTML');
-    const rows = normalizeIncomingRows(parseCSV(text));
-    if (rows.length === 0) throw new Error('SHEET_EMPTY');
-    return rows;
+    return fetchGoogleSheetPanelRowsViaJsonp();
 };
 
 function useLocalStorage(key, initialValue) {
@@ -1939,8 +1933,7 @@ export default function App() {
 
             return summary;
         } catch (error) {
-            const errorLabel = String(error?.message || 'UNKNOWN_ERROR');
-            setSheetLoadError(`Nao foi possivel carregar a aba PAINEL do Google Sheets. (${errorLabel})`);
+            setSheetLoadError('Nao foi possivel carregar a aba PAINEL do Google Sheets.');
             if (!silent) {
                 setIsGSheetsModalOpen(true);
                 setLoading(false);
