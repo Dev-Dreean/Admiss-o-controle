@@ -4,7 +4,7 @@ import {
     X, ChevronRight, Briefcase, Download, Edit2, Save,
     LayoutDashboard, ListTodo, TableProperties, PlusCircle,
     BarChart2, PieChart as PieChartIcon, Trash2, CheckCircle2, XCircle, Send, PauseCircle,
-    Undo2, Redo2, Check, ChevronLeft, ChevronUp, ChevronDown, Map, LogOut, Sliders
+    Undo2, Redo2, Check, ChevronLeft, ChevronUp, ChevronDown, GripVertical, Map, LogOut, Sliders
 } from 'lucide-react';
 import {
     PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer
@@ -311,6 +311,87 @@ const getPrazoKey = (row) => getRowKey(row, PRAZO_KEYS);
 const SHEETS_PRIORITY_COLUMNS = ['Status', 'Nome Subs', 'CARGO', 'Candidato', 'Contato Candidato', 'NRE / MUNICIPIO', 'Motivo', 'OBS:'];
 const isBlankCell = (value) => value === undefined || value === null || String(value).trim() === '';
 const DEFAULT_SHEET_UI_PREFS = { hiddenColumns: [], widthOverrides: {}, columnOrder: [] };
+
+const computeImportOutcome = (previousRows, importedRows, fromSheets) => {
+    const prevArray = Array.isArray(previousRows) ? previousRows : [];
+    const cleanedRows = Array.isArray(importedRows)
+        ? importedRows.filter((row) => Object.values(row || {}).some((val) => val !== null && String(val).trim() !== ''))
+        : [];
+
+    if (prevArray.length === 0) {
+        const seededRows = cleanedRows.map((row) => ({ ...row, _id: Math.random().toString(36).slice(2, 11) }));
+        return {
+            mergedRows: seededRows,
+            stats: {
+                totalImported: cleanedRows.length,
+                addedCount: seededRows.length,
+                updatedCount: 0,
+                unchangedCount: 0,
+            },
+        };
+    }
+
+    let addedCount = 0;
+    let updatedCount = 0;
+    let unchangedCount = 0;
+    const mergedRows = [...prevArray];
+
+    cleanedRows.forEach((newRow) => {
+        const existingIdx = mergedRows.findIndex((row) => (row['Mat. Subs'] && row['Mat. Subs'] === newRow['Mat. Subs']) || (row['Nº Protoc'] && row['Nº Protoc'] === newRow['Nº Protoc']));
+
+        if (existingIdx < 0) {
+            mergedRows.push({ ...newRow, _id: Math.random().toString(36).slice(2, 11) });
+            addedCount += 1;
+            return;
+        }
+
+        const currentRow = mergedRows[existingIdx];
+
+        if (fromSheets) {
+            const mergedRow = { ...currentRow };
+            let hasChanges = false;
+
+            Object.entries(newRow).forEach(([key, value]) => {
+                if (!(key in mergedRow) || isBlankCell(mergedRow[key])) {
+                    mergedRow[key] = value;
+                    hasChanges = true;
+                }
+            });
+
+            mergedRows[existingIdx] = mergedRow;
+            if (hasChanges) updatedCount += 1;
+            else unchangedCount += 1;
+            return;
+        }
+
+        const preserve = {
+            Candidato: currentRow.Candidato !== 'SEM COBERTURA' ? currentRow.Candidato : newRow.Candidato,
+            Status: currentRow.Status !== 'ABERTA' ? currentRow.Status : newRow.Status,
+            'Contato Candidato': currentRow['Contato Candidato'] || newRow['Contato Candidato'],
+            'OBS:': currentRow['OBS:'] || newRow['OBS:'],
+        };
+
+        const nextRow = { ...currentRow, ...newRow, ...preserve };
+        const hasChanges = Object.keys(nextRow).some((key) => {
+            if (key === '_id' || key === '_isInvalid') return false;
+            return String(currentRow[key] ?? '') !== String(nextRow[key] ?? '');
+        });
+
+        mergedRows[existingIdx] = nextRow;
+        if (hasChanges) updatedCount += 1;
+        else unchangedCount += 1;
+    });
+
+    return {
+        mergedRows,
+        stats: {
+            totalImported: cleanedRows.length,
+            addedCount,
+            updatedCount,
+            unchangedCount,
+        },
+    };
+};
 
 const DEFAULT_TUTORIAL_PROGRESS = Object.freeze({
     TABELA: false,
@@ -1124,10 +1205,13 @@ export default function App() {
     const [isChartModalOpen, setIsChartModalOpen] = useState(false);
     const [newChartData, setNewChartData] = useState({ title: '', type: 'bar', groupBy: 'CARGO' });
     const [isGSheetsModalOpen, setIsGSheetsModalOpen] = useState(false);
+    const [importSummary, setImportSummary] = useState(null);
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
     const [deleteModalRecord, setDeleteModalRecord] = useState(null);
 
     const [isCinematic, setIsCinematic] = useState(false);
+    const [draggedSheetColumn, setDraggedSheetColumn] = useState('');
+    const [sheetDropTarget, setSheetDropTarget] = useState('');
 
     const mainScrollRef = useRef(null);
     const tableSearchInputRef = useRef(null);
@@ -1392,39 +1476,32 @@ export default function App() {
         resetAuthenticatedUi();
     };
 
-    const processDataImport = (newDataArray, fromSheets, isSilent = false) => {
-        const cleanedNewData = newDataArray.filter((row) => Object.values(row).some((val) => val !== null && String(val).trim() !== ''));
+    const processDataImport = (newDataArray, fromSheets, isSilent = false, sourceLabel = fromSheets ? 'Google Sheets' : 'Arquivo Excel') => {
+        let nextSummary = null;
+
         setAppData((prevData) => {
-            const prevArray = Array.isArray(prevData) ? prevData : [];
-            if (prevArray.length === 0) return validateData(cleanedNewData.map((row) => ({ ...row, _id: Math.random().toString(36).slice(2, 11) })));
-            const mergedData = [...prevArray];
-            cleanedNewData.forEach((newRow) => {
-                const existingIdx = mergedData.findIndex((r) => (r['Mat. Subs'] && r['Mat. Subs'] === newRow['Mat. Subs']) || (r['Nº Protoc'] && r['Nº Protoc'] === newRow['Nº Protoc']));
-                if (existingIdx >= 0) {
-                    if (fromSheets) {
-                        const currentRow = mergedData[existingIdx];
-                        const mergedRow = { ...currentRow };
+            const importOutcome = computeImportOutcome(prevData, newDataArray, fromSheets);
+            const validatedRows = validateData(importOutcome.mergedRows);
 
-                        Object.entries(newRow).forEach(([key, value]) => {
-                            if (!(key in mergedRow) || isBlankCell(mergedRow[key])) mergedRow[key] = value;
-                        });
+            nextSummary = {
+                sourceLabel,
+                synchronizedWithSheets: fromSheets,
+                totalImported: importOutcome.stats.totalImported,
+                addedCount: importOutcome.stats.addedCount,
+                updatedCount: importOutcome.stats.updatedCount,
+                unchangedCount: importOutcome.stats.unchangedCount,
+                invalidCount: validatedRows.filter((row) => row._isInvalid).length,
+                totalAfterImport: validatedRows.length,
+                importedAt: new Date().toISOString(),
+            };
 
-                        mergedData[existingIdx] = mergedRow;
-                        return;
-                    }
-
-                    const preserve = {
-                        Candidato: mergedData[existingIdx].Candidato !== 'SEM COBERTURA' ? mergedData[existingIdx].Candidato : newRow.Candidato,
-                        Status: mergedData[existingIdx].Status !== 'ABERTA' ? mergedData[existingIdx].Status : newRow.Status,
-                        'Contato Candidato': mergedData[existingIdx]['Contato Candidato'] || newRow['Contato Candidato'],
-                        'OBS:': mergedData[existingIdx]['OBS:'] || newRow['OBS:'],
-                    };
-                    mergedData[existingIdx] = { ...mergedData[existingIdx], ...newRow, ...preserve };
-                } else mergedData.push({ ...newRow, _id: Math.random().toString(36).slice(2, 11) });
-            });
-            return validateData(mergedData);
+            return validatedRows;
         });
+
+        if (!isSilent && nextSummary) setImportSummary(nextSummary);
         if (!isSilent) setLoading(false);
+
+        return nextSummary;
     };
 
     const syncGoogleSheetsData = async ({ silent = false, force = false, showInitialLoader = false } = {}) => {
@@ -1445,10 +1522,10 @@ export default function App() {
             if (!response.ok) throw new Error('CORS');
 
             const parsed = parseCSV(await response.text());
-            if (parsed && parsed.length > 0) processDataImport(parsed, true, silent);
-            else if (!silent) setLoading(false);
+            const summary = processDataImport(parsed, true, silent, 'Google Sheets');
+            if ((!parsed || parsed.length === 0) && !silent) setLoading(false);
 
-            return true;
+            return summary;
         } catch (error) {
             if (!silent) {
                 setIsGSheetsModalOpen(true);
@@ -2042,6 +2119,53 @@ export default function App() {
         });
     };
 
+    const moveSheetColumnToTarget = (column, targetColumn) => {
+        if (!column || !targetColumn || column === targetColumn) return;
+
+        setSheetUiPrefs((current) => {
+            const safe = current && typeof current === 'object' ? current : DEFAULT_SHEET_UI_PREFS;
+            const currentOrder = Array.isArray(safe.columnOrder) ? safe.columnOrder.filter((item) => sheetsColumns.includes(item)) : [];
+            const normalizedOrder = [...currentOrder, ...sheetsColumns.filter((item) => !currentOrder.includes(item))];
+            const currentIndex = normalizedOrder.indexOf(column);
+            const targetIndex = normalizedOrder.indexOf(targetColumn);
+
+            if (currentIndex === -1 || targetIndex === -1) return safe;
+
+            const nextOrder = [...normalizedOrder];
+            const [moved] = nextOrder.splice(currentIndex, 1);
+            nextOrder.splice(targetIndex, 0, moved);
+
+            return { ...safe, columnOrder: nextOrder };
+        });
+    };
+
+    const handleSheetColumnDragStart = (column, event) => {
+        setDraggedSheetColumn(column);
+        setSheetDropTarget(column);
+        if (event.dataTransfer) {
+            event.dataTransfer.effectAllowed = 'move';
+            event.dataTransfer.setData('text/plain', column);
+        }
+    };
+
+    const handleSheetColumnDragOver = (column, event) => {
+        event.preventDefault();
+        if (draggedSheetColumn && draggedSheetColumn !== column) setSheetDropTarget(column);
+    };
+
+    const handleSheetColumnDrop = (column, event) => {
+        event.preventDefault();
+        const sourceColumn = draggedSheetColumn || event.dataTransfer?.getData('text/plain') || '';
+        moveSheetColumnToTarget(sourceColumn, column);
+        setDraggedSheetColumn('');
+        setSheetDropTarget('');
+    };
+
+    const handleSheetColumnDragEnd = () => {
+        setDraggedSheetColumn('');
+        setSheetDropTarget('');
+    };
+
     const resetSheetColumnsLayout = () => {
         setSheetUiPrefs(DEFAULT_SHEET_UI_PREFS);
     };
@@ -2361,6 +2485,7 @@ export default function App() {
                                     </div>
 
                                     <p className="text-xs text-slate-600">Busca rapida: use a barra global ou escolha uma coluna + termo.</p>
+                                    <p className="text-[11px] text-slate-500 mt-1">Na tabela, arraste o nome das colunas para reorganizar a visualizacao da equipe.</p>
 
                                     <div className="mt-3 flex items-center justify-end gap-2">
                                         <div ref={sheetColumnsPanelRef} className="relative">
@@ -2452,13 +2577,23 @@ export default function App() {
                                                         );
                                                     }
                                                     const isCandidateBlock = ['Candidato', 'Contato Candidato'].includes(column);
+                                                    const isDragging = draggedSheetColumn === column;
+                                                    const isDropTarget = sheetDropTarget === column && draggedSheetColumn && draggedSheetColumn !== column;
                                                     return (
                                                         <th
                                                             key={column}
                                                             title={column}
-                                                            className={`px-2 py-2 truncate relative select-none ${isLast ? '' : 'border-r'} ${isCandidateBlock ? 'bg-green-50' : ''}`}
+                                                            draggable
+                                                            onDragStart={(event) => handleSheetColumnDragStart(column, event)}
+                                                            onDragOver={(event) => handleSheetColumnDragOver(column, event)}
+                                                            onDrop={(event) => handleSheetColumnDrop(column, event)}
+                                                            onDragEnd={handleSheetColumnDragEnd}
+                                                            className={`px-2 py-2 truncate relative select-none cursor-grab active:cursor-grabbing ${isLast ? '' : 'border-r'} ${isCandidateBlock ? 'bg-green-50' : ''} ${isDragging ? 'opacity-45 bg-indigo-50' : ''} ${isDropTarget ? 'ring-2 ring-inset ring-indigo-400 bg-indigo-50/80' : ''}`}
                                                         >
-                                                            {column}
+                                                            <div className="flex items-center gap-1.5 pr-3">
+                                                                <GripVertical className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                                                                <span className="truncate">{column}</span>
+                                                            </div>
                                                             <div
                                                                 onMouseDown={(event) => startSheetColumnResize(column, event)}
                                                                 className="absolute right-0 top-0 h-full w-2 cursor-col-resize hover:bg-green-300/50"
@@ -2604,6 +2739,72 @@ export default function App() {
                         <button onClick={handleGoogleSheetsSync} className="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2 shadow-md transition-all active:scale-95" type="button">
                             <BarChart2 className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} /> Sincronizar Agora
                         </button>
+                    </div>
+                </div>
+            )}
+
+            {importSummary && (
+                <div className="fixed inset-0 z-[220] bg-slate-900/65 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
+                    <div className="w-full max-w-lg bg-white rounded-3xl border border-slate-200 shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
+                        <div className="px-6 py-5 border-b bg-gradient-to-r from-emerald-50 via-sky-50 to-white flex items-start gap-3">
+                            <div className="p-2.5 rounded-2xl bg-emerald-100">
+                                <FileSpreadsheet className="w-5 h-5 text-emerald-700" />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                                <h3 className="text-lg font-black text-slate-800">Resumo da importacao</h3>
+                                <p className="text-sm text-slate-600 mt-0.5">Origem: <span className="font-bold text-slate-800">{importSummary.sourceLabel}</span></p>
+                            </div>
+                            <button onClick={() => setImportSummary(null)} className="text-slate-400 hover:text-slate-700 transition-colors" type="button"><X className="w-5 h-5" /></button>
+                        </div>
+
+                        <div className="px-6 py-5 space-y-4 bg-white">
+                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                                    <p className="text-[11px] uppercase tracking-wider font-bold text-slate-500">Importados</p>
+                                    <p className="text-2xl font-black text-slate-800 mt-1">{importSummary.totalImported}</p>
+                                </div>
+                                <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-3">
+                                    <p className="text-[11px] uppercase tracking-wider font-bold text-emerald-700">Novos</p>
+                                    <p className="text-2xl font-black text-emerald-800 mt-1">{importSummary.addedCount}</p>
+                                </div>
+                                <div className="rounded-2xl border border-blue-200 bg-blue-50 p-3">
+                                    <p className="text-[11px] uppercase tracking-wider font-bold text-blue-700">Atualizados</p>
+                                    <p className="text-2xl font-black text-blue-800 mt-1">{importSummary.updatedCount}</p>
+                                </div>
+                                <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3">
+                                    <p className="text-[11px] uppercase tracking-wider font-bold text-amber-700">Sem mudanca</p>
+                                    <p className="text-2xl font-black text-amber-800 mt-1">{importSummary.unchangedCount}</p>
+                                </div>
+                            </div>
+
+                            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-3">
+                                <div className="flex items-center justify-between gap-3">
+                                    <span className="text-sm font-bold text-slate-700">Total na base apos importar</span>
+                                    <span className="text-sm font-black text-slate-900">{importSummary.totalAfterImport}</span>
+                                </div>
+                                <div className="flex items-center justify-between gap-3">
+                                    <span className="text-sm font-bold text-slate-700">Linhas com status em branco</span>
+                                    <span className={`text-sm font-black ${importSummary.invalidCount > 0 ? 'text-red-700' : 'text-emerald-700'}`}>{importSummary.invalidCount}</span>
+                                </div>
+                                <div className="flex items-center justify-between gap-3">
+                                    <span className="text-sm font-bold text-slate-700">Google Sheets</span>
+                                    <span className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-black ${importSummary.synchronizedWithSheets ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                                        {importSummary.synchronizedWithSheets ? <CheckCircle2 className="w-4 h-4" /> : <AlertCircle className="w-4 h-4" />}
+                                        {importSummary.synchronizedWithSheets ? 'Sincronizado agora' : 'Importacao local somente'}
+                                    </span>
+                                </div>
+                            </div>
+
+                            <p className={`text-sm leading-relaxed ${importSummary.synchronizedWithSheets ? 'text-emerald-700' : 'text-amber-700'}`}>
+                                {importSummary.synchronizedWithSheets
+                                    ? 'Os dados foram atualizados a partir do Google Sheets e a base exibida ja esta alinhada com a planilha online.'
+                                    : 'Os dados foram importados para o sistema, mas esta importacao ainda nao grava automaticamente no Google Sheets.'}
+                            </p>
+                        </div>
+
+                        <div className="px-6 py-4 border-t bg-slate-50 flex items-center justify-end gap-3">
+                            <button onClick={() => setImportSummary(null)} className="px-5 py-2.5 rounded-xl bg-slate-900 text-white font-bold hover:bg-slate-800 shadow-md active:scale-95 transition-all" type="button">Fechar resumo</button>
+                        </div>
                     </div>
                 </div>
             )}
