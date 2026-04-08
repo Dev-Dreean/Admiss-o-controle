@@ -73,6 +73,7 @@ const createEncryptedExcelAuthDb = (account) => {
         CriadoEm: String(account.createdAt || ''),
         AtualizadoEm: String(account.updatedAt || ''),
         TutorialProgress: JSON.stringify(normalizeTutorialProgress(account.tutorialProgress || DEFAULT_TUTORIAL_PROGRESS)),
+        SheetPreferences: JSON.stringify(account.sheetPreferences || {}),
     };
 
     const workbook = XLSX.utils.book_new();
@@ -111,6 +112,13 @@ const readEncryptedExcelAuthDb = (encryptedValue) => {
                     return DEFAULT_TUTORIAL_PROGRESS;
                 }
             })()),
+            sheetPreferences: (() => {
+                try {
+                    return latestRow.SheetPreferences ? JSON.parse(String(latestRow.SheetPreferences)) : {};
+                } catch (error) {
+                    return {};
+                }
+            })(),
         };
 
         return hasStoredAccount(account) ? account : null;
@@ -1192,9 +1200,17 @@ export default function App() {
     const [sheetFilterTerm, setSheetFilterTerm] = useState('');
     const [sheetPage, setSheetPage] = useState(1);
     const [sheetUiPrefsRaw, setSheetUiPrefs] = useLocalStorage('vagas_sheets_ui_prefs', DEFAULT_SHEET_UI_PREFS);
-    const sheetUiPrefs = sheetUiPrefsRaw && typeof sheetUiPrefsRaw === 'object'
+    // Load sheet preferences from account if user is authenticated, otherwise from localStorage
+    const accountSheetPrefs = useMemo(() => {
+        if (isAuthenticated && savedAccount?.sheetPreferences) {
+            return savedAccount.sheetPreferences;
+        }
+        return null;
+    }, [isAuthenticated, savedAccount?.sheetPreferences]);
+
+    const sheetUiPrefs = accountSheetPrefs || (sheetUiPrefsRaw && typeof sheetUiPrefsRaw === 'object'
         ? sheetUiPrefsRaw
-        : DEFAULT_SHEET_UI_PREFS;
+        : DEFAULT_SHEET_UI_PREFS);
     const [isSheetColumnsPanelOpen, setIsSheetColumnsPanelOpen] = useState(false);
     const [isQuickAddModalOpen, setIsQuickAddModalOpen] = useState(false);
     const [quickAddData, setQuickAddData] = useState({});
@@ -1219,6 +1235,7 @@ export default function App() {
     const sheetColumnsPanelRef = useRef(null);
     const sheetResizeStateRef = useRef(null);
     const sheetsSyncStateRef = useRef({ inFlight: false, lastAt: 0 });
+    const sheetPrefsSyncTimeoutRef = useRef(null);
     const persistAccount = (account) => {
         if (!hasStoredAccount(account)) {
             setEncryptedAccountDb('');
@@ -1229,6 +1246,7 @@ export default function App() {
         const normalizedAccount = {
             ...account,
             tutorialProgress: normalizeTutorialProgress(account?.tutorialProgress || DEFAULT_TUTORIAL_PROGRESS),
+            sheetPreferences: account?.sheetPreferences || {},
         };
 
         const encryptedDb = createEncryptedExcelAuthDb(normalizedAccount);
@@ -1274,6 +1292,42 @@ export default function App() {
         setIsChartModalOpen(false);
         setIsGSheetsModalOpen(false);
     };
+
+    // Sync sheet preferences to account when they change and user is authenticated
+    useEffect(() => {
+        if (!isAuthenticated || !savedAccount) return;
+
+        // Debounce to avoid excessive saves while dragging
+        if (sheetPrefsSyncTimeoutRef.current) {
+            clearTimeout(sheetPrefsSyncTimeoutRef.current);
+        }
+
+        sheetPrefsSyncTimeoutRef.current = setTimeout(() => {
+            const prefs = {
+                columnOrder: sheetUiPrefs.columnOrder || [],
+                hiddenColumns: sheetUiPrefs.hiddenColumns || [],
+                widthOverrides: sheetUiPrefs.widthOverrides || {},
+            };
+
+            // Only update if preferences actually changed
+            const currentSavedPrefs = JSON.stringify(savedAccount?.sheetPreferences || {});
+            const newPrefs = JSON.stringify(prefs);
+
+            if (currentSavedPrefs !== newPrefs) {
+                const updatedAccount = {
+                    ...savedAccount,
+                    sheetPreferences: prefs,
+                };
+                persistAccount(updatedAccount);
+            }
+        }, 500); // 500ms debounce
+
+        return () => {
+            if (sheetPrefsSyncTimeoutRef.current) {
+                clearTimeout(sheetPrefsSyncTimeoutRef.current);
+            }
+        };
+    }, [isAuthenticated, savedAccount, sheetUiPrefs, persistAccount]);
 
     useEffect(() => {
         if (!legacyAccount || hasStoredAccount(decryptedAccount)) return;
@@ -2542,17 +2596,7 @@ export default function App() {
                                             )}
                                         </div>
 
-                                        <button
-                                            onClick={() => {
-                                                setActiveTab('SHEETS');
-                                                setTutorialSection('NEW_FEATURES_SHEETS_V2');
-                                                setShowTutorial(true);
-                                            }}
-                                            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 text-white text-sm font-bold hover:bg-indigo-700 border border-indigo-600 shadow-sm transition-all"
-                                            type="button"
-                                        >
-                                            <ChevronRight className="w-4 h-4" /> Tutorial Planilha
-                                        </button>
+
 
                                         <button onClick={openQuickAddModal} className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-emerald-600 text-white text-sm font-bold hover:bg-emerald-700 shadow-sm hover:shadow-md transition-all" type="button"><PlusCircle className="w-5 h-5" /> Novo Cadastro (C)</button>
                                     </div>
@@ -2678,8 +2722,6 @@ export default function App() {
             {showPatchNotes && !showWelcome && isAuthenticated && (
                 <PatchNotesModal
                     onClose={handlePatchNotesClose}
-                    onStartTableTutorial={handlePatchNotesStartTableTutorial}
-                    onStartSheetsTutorial={handlePatchNotesStartSheetsTutorial}
                 />
             )}
 
