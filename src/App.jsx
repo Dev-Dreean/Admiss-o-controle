@@ -4,7 +4,7 @@ import {
     X, ChevronRight, Briefcase, Download, Edit2, Save,
     LayoutDashboard, ListTodo, TableProperties, PlusCircle,
     BarChart2, PieChart as PieChartIcon, Trash2, CheckCircle2, XCircle, Send, PauseCircle,
-    Undo2, Redo2, Check, ChevronLeft, Map, LogOut, Sliders
+    Undo2, Redo2, Check, ChevronLeft, ChevronUp, ChevronDown, Map, LogOut, Sliders
 } from 'lucide-react';
 import {
     PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer
@@ -47,6 +47,7 @@ const AUTH_DB_SHEET_NAME = 'USUARIOS';
 const AUTH_DB_SECRET = 'controle-admissoes-auth-db-v1';
 const GRID_PAGE_SIZE = 200;
 const SHEETS_PAGE_SIZE = 120;
+const SHEETS_AUTO_SYNC_COOLDOWN_MS = 45000;
 const REQUIRED_FIELDS = ['Nome Subs', 'Status'];
 
 const encodeBase64 = (arrayBuffer) => {
@@ -308,6 +309,8 @@ const getRowKey = (row, possibleKeys) => {
 const getPrazoValue = (row) => getRowValue(row, PRAZO_KEYS);
 const getPrazoKey = (row) => getRowKey(row, PRAZO_KEYS);
 const SHEETS_PRIORITY_COLUMNS = ['Status', 'Nome Subs', 'CARGO', 'Candidato', 'Contato Candidato', 'NRE / MUNICIPIO', 'Motivo', 'OBS:'];
+const isBlankCell = (value) => value === undefined || value === null || String(value).trim() === '';
+const DEFAULT_SHEET_UI_PREFS = { hiddenColumns: [], widthOverrides: {}, columnOrder: [] };
 
 const DEFAULT_TUTORIAL_PROGRESS = Object.freeze({
     TABELA: false,
@@ -1107,10 +1110,10 @@ export default function App() {
     const [sheetFilterColumn, setSheetFilterColumn] = useState('TODOS');
     const [sheetFilterTerm, setSheetFilterTerm] = useState('');
     const [sheetPage, setSheetPage] = useState(1);
-    const [sheetUiPrefsRaw, setSheetUiPrefs] = useLocalStorage('vagas_sheets_ui_prefs', { hiddenColumns: [], widthOverrides: {} });
+    const [sheetUiPrefsRaw, setSheetUiPrefs] = useLocalStorage('vagas_sheets_ui_prefs', DEFAULT_SHEET_UI_PREFS);
     const sheetUiPrefs = sheetUiPrefsRaw && typeof sheetUiPrefsRaw === 'object'
         ? sheetUiPrefsRaw
-        : { hiddenColumns: [], widthOverrides: {} };
+        : DEFAULT_SHEET_UI_PREFS;
     const [isSheetColumnsPanelOpen, setIsSheetColumnsPanelOpen] = useState(false);
     const [isQuickAddModalOpen, setIsQuickAddModalOpen] = useState(false);
     const [quickAddData, setQuickAddData] = useState({});
@@ -1131,6 +1134,7 @@ export default function App() {
     const sheetSearchInputRef = useRef(null);
     const sheetColumnsPanelRef = useRef(null);
     const sheetResizeStateRef = useRef(null);
+    const sheetsSyncStateRef = useRef({ inFlight: false, lastAt: 0 });
     const persistAccount = (account) => {
         if (!hasStoredAccount(account)) {
             setEncryptedAccountDb('');
@@ -1397,6 +1401,18 @@ export default function App() {
             cleanedNewData.forEach((newRow) => {
                 const existingIdx = mergedData.findIndex((r) => (r['Mat. Subs'] && r['Mat. Subs'] === newRow['Mat. Subs']) || (r['Nº Protoc'] && r['Nº Protoc'] === newRow['Nº Protoc']));
                 if (existingIdx >= 0) {
+                    if (fromSheets) {
+                        const currentRow = mergedData[existingIdx];
+                        const mergedRow = { ...currentRow };
+
+                        Object.entries(newRow).forEach(([key, value]) => {
+                            if (!(key in mergedRow) || isBlankCell(mergedRow[key])) mergedRow[key] = value;
+                        });
+
+                        mergedData[existingIdx] = mergedRow;
+                        return;
+                    }
+
                     const preserve = {
                         Candidato: mergedData[existingIdx].Candidato !== 'SEM COBERTURA' ? mergedData[existingIdx].Candidato : newRow.Candidato,
                         Status: mergedData[existingIdx].Status !== 'ABERTA' ? mergedData[existingIdx].Status : newRow.Status,
@@ -1408,27 +1424,62 @@ export default function App() {
             });
             return validateData(mergedData);
         });
-        setLoading(false);
+        if (!isSilent) setLoading(false);
+    };
+
+    const syncGoogleSheetsData = async ({ silent = false, force = false, showInitialLoader = false } = {}) => {
+        const syncState = sheetsSyncStateRef.current;
+        const now = Date.now();
+
+        if (syncState.inFlight) return false;
+        if (!force && syncState.lastAt && now - syncState.lastAt < SHEETS_AUTO_SYNC_COOLDOWN_MS) return false;
+
+        syncState.inFlight = true;
+        syncState.lastAt = now;
+
+        if (!silent) setLoading(true);
+        if (showInitialLoader) setIsInitialSyncing(true);
+
+        try {
+            const response = await fetch(GOOGLE_SHEETS_CSV_EXPORT);
+            if (!response.ok) throw new Error('CORS');
+
+            const parsed = parseCSV(await response.text());
+            if (parsed && parsed.length > 0) processDataImport(parsed, true, silent);
+            else if (!silent) setLoading(false);
+
+            return true;
+        } catch (error) {
+            if (!silent) {
+                setIsGSheetsModalOpen(true);
+                setLoading(false);
+            }
+            return false;
+        } finally {
+            syncState.inFlight = false;
+            syncState.lastAt = Date.now();
+            if (showInitialLoader) setIsInitialSyncing(false);
+        }
     };
 
     useEffect(() => {
-        const autoSyncWithSheets = async () => {
-            if (localData.length === 0) {
-                setIsInitialSyncing(true);
-                try {
-                    const response = await fetch(GOOGLE_SHEETS_CSV_EXPORT);
-                    if (response.ok) {
-                        const csvText = await response.text();
-                        const parsed = parseCSV(csvText);
-                        if (parsed && parsed.length > 0) processDataImport(parsed, true, true);
-                    }
-                } catch (error) {
-                    // no-op
-                }
-                setIsInitialSyncing(false);
-            }
+        syncGoogleSheetsData({ silent: true, force: true, showInitialLoader: localData.length === 0 });
+
+        const handleVisibilitySync = () => {
+            if (document.visibilityState === 'visible') syncGoogleSheetsData({ silent: true });
         };
-        autoSyncWithSheets();
+
+        const handleFocusSync = () => {
+            syncGoogleSheetsData({ silent: true });
+        };
+
+        window.addEventListener('focus', handleFocusSync);
+        document.addEventListener('visibilitychange', handleVisibilitySync);
+
+        return () => {
+            window.removeEventListener('focus', handleFocusSync);
+            document.removeEventListener('visibilitychange', handleVisibilitySync);
+        };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
@@ -1505,15 +1556,7 @@ export default function App() {
 
     const handleGoogleSheetsSync = async () => {
         setIsGSheetsModalOpen(false);
-        setLoading(true);
-        try {
-            const response = await fetch(GOOGLE_SHEETS_CSV_EXPORT);
-            if (!response.ok) throw new Error('CORS');
-            processDataImport(parseCSV(await response.text()), true);
-        } catch (error) {
-            setIsGSheetsModalOpen(true);
-            setLoading(false);
-        }
+        await syncGoogleSheetsData({ force: true });
     };
 
     const handleFileUpload = async (event) => {
@@ -1764,6 +1807,13 @@ export default function App() {
         return [...prioritized, ...others];
     }, [filteredData]);
 
+    const orderedSheetColumns = useMemo(() => {
+        const preferredOrder = Array.isArray(sheetUiPrefs.columnOrder) ? sheetUiPrefs.columnOrder : [];
+        const ordered = preferredOrder.filter((column) => sheetsColumns.includes(column));
+        const remaining = sheetsColumns.filter((column) => !ordered.includes(column));
+        return [...ordered, ...remaining];
+    }, [sheetUiPrefs.columnOrder, sheetsColumns]);
+
     const detailedColumns = useMemo(() => {
         if (sheetsColumns.length > 0) return sheetsColumns;
         if (selectedRecord && typeof selectedRecord === 'object') {
@@ -1799,8 +1849,8 @@ export default function App() {
     ), [sheetUiPrefs.hiddenColumns]);
 
     const visibleSheetColumns = useMemo(() => (
-        sheetsColumns.filter((column) => !hiddenSheetColumns.includes(column))
-    ), [hiddenSheetColumns, sheetsColumns]);
+        orderedSheetColumns.filter((column) => !hiddenSheetColumns.includes(column))
+    ), [hiddenSheetColumns, orderedSheetColumns]);
 
     const sheetColumnsWithActions = useMemo(() => {
         const idx = visibleSheetColumns.findIndex((c) => normalizeCredentialText(c) === 'status');
@@ -1892,22 +1942,26 @@ export default function App() {
 
     useEffect(() => {
         setSheetUiPrefs((current) => {
-            const safe = current && typeof current === 'object' ? current : { hiddenColumns: [], widthOverrides: {} };
+            const safe = current && typeof current === 'object' ? current : DEFAULT_SHEET_UI_PREFS;
             const hidden = Array.isArray(safe.hiddenColumns)
                 ? safe.hiddenColumns.filter((column) => sheetsColumns.includes(column))
                 : [];
             const widthOverrides = safe.widthOverrides && typeof safe.widthOverrides === 'object'
                 ? Object.fromEntries(Object.entries(safe.widthOverrides).filter(([column]) => sheetsColumns.includes(column)))
                 : {};
+            const columnOrder = Array.isArray(safe.columnOrder)
+                ? safe.columnOrder.filter((column) => sheetsColumns.includes(column))
+                : [];
 
             if (
                 JSON.stringify(hidden) === JSON.stringify(safe.hiddenColumns || [])
                 && JSON.stringify(widthOverrides) === JSON.stringify(safe.widthOverrides || {})
+                && JSON.stringify(columnOrder) === JSON.stringify(safe.columnOrder || [])
             ) {
                 return safe;
             }
 
-            return { hiddenColumns: hidden, widthOverrides };
+            return { hiddenColumns: hidden, widthOverrides, columnOrder };
         });
     }, [setSheetUiPrefs, sheetsColumns]);
 
@@ -1931,7 +1985,7 @@ export default function App() {
             const nextWidth = Math.max(70, Math.min(420, Math.round(state.startWidth + delta)));
 
             setSheetUiPrefs((current) => {
-                const safe = current && typeof current === 'object' ? current : { hiddenColumns: [], widthOverrides: {} };
+                const safe = current && typeof current === 'object' ? current : DEFAULT_SHEET_UI_PREFS;
                 const currentOverrides = safe.widthOverrides && typeof safe.widthOverrides === 'object' ? safe.widthOverrides : {};
                 return {
                     ...safe,
@@ -1957,19 +2011,39 @@ export default function App() {
 
     const toggleSheetColumnVisibility = (column) => {
         setSheetUiPrefs((current) => {
-            const safe = current && typeof current === 'object' ? current : { hiddenColumns: [], widthOverrides: {} };
+            const safe = current && typeof current === 'object' ? current : DEFAULT_SHEET_UI_PREFS;
             const hidden = Array.isArray(safe.hiddenColumns) ? safe.hiddenColumns : [];
             const isHidden = hidden.includes(column);
             const nextHidden = isHidden ? hidden.filter((item) => item !== column) : [...hidden, column];
 
-            if (nextHidden.length >= sheetsColumns.length) return safe;
+            if (nextHidden.length >= orderedSheetColumns.length) return safe;
 
             return { ...safe, hiddenColumns: nextHidden };
         });
     };
 
+    const moveSheetColumn = (column, direction) => {
+        setSheetUiPrefs((current) => {
+            const safe = current && typeof current === 'object' ? current : DEFAULT_SHEET_UI_PREFS;
+            const currentOrder = Array.isArray(safe.columnOrder) ? safe.columnOrder.filter((item) => sheetsColumns.includes(item)) : [];
+            const normalizedOrder = [...currentOrder, ...sheetsColumns.filter((item) => !currentOrder.includes(item))];
+            const currentIndex = normalizedOrder.indexOf(column);
+
+            if (currentIndex === -1) return safe;
+
+            const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
+            if (targetIndex < 0 || targetIndex >= normalizedOrder.length) return safe;
+
+            const nextOrder = [...normalizedOrder];
+            const [moved] = nextOrder.splice(currentIndex, 1);
+            nextOrder.splice(targetIndex, 0, moved);
+
+            return { ...safe, columnOrder: nextOrder };
+        });
+    };
+
     const resetSheetColumnsLayout = () => {
-        setSheetUiPrefs({ hiddenColumns: [], widthOverrides: {} });
+        setSheetUiPrefs(DEFAULT_SHEET_UI_PREFS);
     };
 
     const startSheetColumnResize = (column, event) => {
@@ -2301,10 +2375,12 @@ export default function App() {
                                                         <button onClick={resetSheetColumnsLayout} className="text-xs font-bold text-indigo-600 hover:text-indigo-800" type="button">Resetar layout</button>
                                                     </div>
                                                     <div className="p-3 space-y-1 max-h-[280px] overflow-auto">
-                                                        {sheetsColumns.map((column, index) => {
+                                                        {orderedSheetColumns.map((column, index) => {
                                                             const checked = !hiddenSheetColumns.includes(column);
+                                                            const isFirst = index === 0;
+                                                            const isLast = index === orderedSheetColumns.length - 1;
                                                             return (
-                                                                <label id={index === 0 ? 'tour-sheets-columns-first-toggle' : undefined} key={`sheet-col-toggle-${column}`} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-50 cursor-pointer">
+                                                                <div id={index === 0 ? 'tour-sheets-columns-first-toggle' : undefined} key={`sheet-col-toggle-${column}`} className="flex items-center gap-2 px-2 py-1.5 rounded-lg hover:bg-slate-50">
                                                                     <input
                                                                         type="checkbox"
                                                                         checked={checked}
@@ -2312,8 +2388,28 @@ export default function App() {
                                                                         disabled={checked && visibleSheetColumns.length <= 1}
                                                                         className="rounded text-green-600 focus:ring-green-500"
                                                                     />
-                                                                    <span className="text-sm text-slate-700 truncate">{column}</span>
-                                                                </label>
+                                                                    <span className="flex-1 text-sm text-slate-700 truncate">{column}</span>
+                                                                    <div className="flex items-center gap-1">
+                                                                        <button
+                                                                            onClick={() => moveSheetColumn(column, 'up')}
+                                                                            disabled={isFirst}
+                                                                            className="inline-flex items-center justify-center w-7 h-7 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                                                                            type="button"
+                                                                            aria-label={`Mover ${column} para cima`}
+                                                                        >
+                                                                            <ChevronUp className="w-4 h-4" />
+                                                                        </button>
+                                                                        <button
+                                                                            onClick={() => moveSheetColumn(column, 'down')}
+                                                                            disabled={isLast}
+                                                                            className="inline-flex items-center justify-center w-7 h-7 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                                                                            type="button"
+                                                                            aria-label={`Mover ${column} para baixo`}
+                                                                        >
+                                                                            <ChevronDown className="w-4 h-4" />
+                                                                        </button>
+                                                                    </div>
+                                                                </div>
                                                             );
                                                         })}
                                                     </div>
