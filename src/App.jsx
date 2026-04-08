@@ -359,7 +359,9 @@ const getRowKey = (row, possibleKeys) => {
 
 const getPrazoValue = (row) => getRowValue(row, PRAZO_KEYS);
 const getPrazoKey = (row) => getRowKey(row, PRAZO_KEYS);
-const SHEETS_PRIORITY_COLUMNS = ['Status', 'Nome Subs', 'CARGO', 'Candidato', 'Contato Candidato', 'NRE / MUNICIPIO', 'Motivo', 'OBS:'];
+const getProtocolValue = (row) => getRowValue(row, PROTOCOL_KEYS);
+const getProtocolKey = (row) => getRowKey(row, PROTOCOL_KEYS);
+const SHEETS_PRIORITY_COLUMNS = ['Nº Protoc', 'Status', 'Nome Subs', 'CARGO', 'Candidato', 'Contato Candidato', 'NRE / MUNICIPIO', 'Motivo', 'OBS:'];
 const isBlankCell = (value) => value === undefined || value === null || String(value).trim() === '';
 const DEFAULT_SHEET_UI_PREFS = { hiddenColumns: [], widthOverrides: {}, columnOrder: [] };
 const INTERNAL_ROW_KEYS = new Set(['_id', '_isInvalid']);
@@ -390,7 +392,7 @@ const getRowIdentity = (row) => {
 };
 
 const getImportIdentity = (row) => {
-    const protocolId = String(getRowValue(row, PROTOCOL_KEYS) || '').trim();
+    const protocolId = String(getProtocolValue(row) || '').trim();
     const enrollmentId = String(getRowValue(row, SUBS_ENROLLMENT_KEYS) || '').trim();
     const cargo = String(getRowValue(row, ['CARGO', 'Cargo', 'cargo']) || '').trim();
     const municipio = String(getRowValue(row, MUNICIPIO_KEYS) || '').trim();
@@ -2686,6 +2688,9 @@ export default function App() {
                                                 const status = safeGet(row, 'Status');
                                                 const candidato = row.Candidato || 'SEM COBERTURA';
                                                 const prazoValue = getPrazoValue(row);
+                                                const protocolValue = String(getProtocolValue(row) || '').trim();
+                                                const cargoValue = String(getRowValue(row, ['CARGO', 'Cargo', 'cargo']) || '');
+                                                const municipioValue = String(getRowValue(row, MUNICIPIO_KEYS) || '');
                                                 const diasParaInicio = getDaysDiff(prazoValue);
                                                 const prazoDisplayValue = formatDateDisplay(prazoValue);
                                                 return (
@@ -2697,7 +2702,11 @@ export default function App() {
                                                                     <option value="ABERTA">ABERTA</option><option value="FECHADA">FECHADA</option><option value="ENCAMINHADA">ENCAMINHADA</option><option value="CANCELADA">CANCELADA</option><option value="PAUSADA">PAUSADA</option>
                                                                 </select>
                                                             </td>
-                                                            <td className="px-6 py-4"><div className={`font-bold ${row._isInvalid ? 'text-red-700' : 'text-slate-900'}`}>{row['Nome Subs'] || 'FALTANDO'}</div><div className="text-slate-600 text-xs mt-0.5">{row.CARGO} • {row['NRE / MUNICIPIO']}</div></td>
+                                                            <td className="px-6 py-4">
+                                                                {protocolValue ? <div className="text-[11px] font-black uppercase tracking-wider text-indigo-700 mb-1">Protocolo {protocolValue}</div> : null}
+                                                                <div className={`font-bold ${row._isInvalid ? 'text-red-700' : 'text-slate-900'}`}>{row['Nome Subs'] || 'FALTANDO'}</div>
+                                                                <div className="text-slate-600 text-xs mt-0.5">{cargoValue} • {municipioValue}</div>
+                                                            </td>
                                                             <td className="px-6 py-4"><div className={`font-bold ${candidato === 'SEM COBERTURA' ? 'text-red-700' : 'text-slate-800'}`}>{candidato}</div><div className="text-slate-500 text-xs mt-0.5">{row['Contato Candidato'] || 'Sem contato'}</div></td>
                                                             <td className="px-6 py-4"><div className="font-bold text-slate-800">{prazoDisplayValue || 'Sem prazo'}</div>
                                                                 {diasParaInicio !== null && !['FECHADA', 'ENCAMINHADA', 'CANCELADA'].includes(status) && candidato === 'SEM COBERTURA' && (
