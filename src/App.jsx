@@ -246,6 +246,12 @@ const parseCSV = (text) => {
     return result;
 };
 
+const looksLikeHtmlDocument = (text) => /<html|<!doctype html/i.test(String(text || ''));
+
+// Replace JS constructors like `new Date(...)` or `new V2(...)` so the text can be parsed as JSON.
+// We keep the formatted string value (cell.f) for display and lose the raw typed value (cell.v).
+const sanitizeGvizJsonText = (text) => String(text || '').replace(/new\s+[A-Za-z_$][A-Za-z0-9_$]*\s*\([^)]*\)/g, 'null');
+
 const parseGoogleVisualizationResponse = (rawText) => {
     const text = String(rawText || '').trim();
     const startIndex = text.indexOf('{');
@@ -312,15 +318,33 @@ const fetchGoogleSheetPanelRowsViaJsonp = () => new Promise((resolve, reject) =>
 });
 
 const fetchGoogleSheetPanelRows = async () => {
+    // 1. Try CSV export — fastest and cleanest format
     try {
         const response = await fetch(`${GOOGLE_SHEETS_CSV_EXPORT}&t=${Date.now()}`);
         if (!response.ok) throw new Error('CSV_FETCH_FAILED');
-        const rows = normalizeIncomingRows(parseCSV(await response.text()));
+        const text = await response.text();
+        if (looksLikeHtmlDocument(text)) throw new Error('CSV_RETURNED_HTML');
+        const rows = normalizeIncomingRows(parseCSV(text));
         if (rows.length > 0) return rows;
     } catch (error) {
-        // fallback below
+        // fall through to gviz fetch
     }
 
+    // 2. Try gviz fetch with text sanitization — avoids "V2 is not a constructor" JSONP issue
+    try {
+        const response = await fetch(`${GOOGLE_SHEETS_GVIZ_URL}&t=${Date.now()}`);
+        if (!response.ok) throw new Error('GVIZ_FETCH_FAILED');
+        const rawText = await response.text();
+        if (looksLikeHtmlDocument(rawText)) throw new Error('GVIZ_RETURNED_HTML');
+        const sanitized = sanitizeGvizJsonText(rawText);
+        const payload = parseGoogleVisualizationResponse(sanitized);
+        const rows = normalizeIncomingRows(parseGoogleVisualizationRows(payload));
+        if (rows.length > 0) return rows;
+    } catch (error) {
+        // fall through to JSONP
+    }
+
+    // 3. Last resort: JSONP (may fail if Google response contains unknown constructors)
     return fetchGoogleSheetPanelRowsViaJsonp();
 };
 
