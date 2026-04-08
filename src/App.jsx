@@ -132,20 +132,56 @@ const readEncryptedExcelAuthDb = (encryptedValue) => {
 
 const safeGet = (obj, key) => String(obj[key] || '').trim().toUpperCase();
 
+const expandShortYear = (year) => {
+    const numericYear = parseInt(year, 10);
+    if (Number.isNaN(numericYear)) return null;
+    if (String(year).length >= 4) return numericYear;
+    return 2000 + numericYear;
+};
+
+const buildSafeDate = (day, month, year) => {
+    const normalizedDay = parseInt(day, 10);
+    const normalizedMonth = parseInt(month, 10);
+    const normalizedYear = expandShortYear(year);
+
+    if (!normalizedDay || !normalizedMonth || !normalizedYear) return null;
+
+    const date = new Date(normalizedYear, normalizedMonth - 1, normalizedDay);
+    if (
+        Number.isNaN(date.getTime())
+        || date.getFullYear() !== normalizedYear
+        || date.getMonth() !== normalizedMonth - 1
+        || date.getDate() !== normalizedDay
+    ) {
+        return null;
+    }
+
+    return date;
+};
+
 const parseDate = (dateStr) => {
     if (!dateStr || dateStr === '-') return null;
     const str = String(dateStr).trim().split(' ')[0];
     if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
         const [y, m, d] = str.split('-');
-        return new Date(parseInt(y, 10), parseInt(m, 10) - 1, parseInt(d, 10));
+        return buildSafeDate(d, m, y);
     }
     if (/^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(str)) {
         const [d, m, y] = str.split('/');
-        return new Date(parseInt(y, 10), parseInt(m, 10) - 1, parseInt(d, 10));
+        return buildSafeDate(d, m, y);
     }
     const parsed = new Date(dateStr);
     if (!Number.isNaN(parsed.getTime())) return new Date(parsed.getTime() + parsed.getTimezoneOffset() * 60000);
     return null;
+};
+
+const formatDateDisplay = (dateStr) => {
+    const parsed = parseDate(dateStr);
+    if (!parsed) return String(dateStr || '');
+    const day = String(parsed.getDate()).padStart(2, '0');
+    const month = String(parsed.getMonth() + 1).padStart(2, '0');
+    const year = String(parsed.getFullYear());
+    return `${day}/${month}/${year}`;
 };
 
 const getDaysDiff = (dateStr) => {
@@ -283,6 +319,7 @@ const PRAZO_KEYS = [
     'Data de Prazo',
     'Data Inicio',
 ];
+const isPrazoColumn = (column) => PRAZO_KEYS.some((key) => normalizeCredentialText(key) === normalizeCredentialText(column));
 
 const getRowValue = (row, possibleKeys) => {
     if (!row || typeof row !== 'object') return '';
@@ -2578,6 +2615,7 @@ export default function App() {
                                                 const candidato = row.Candidato || 'SEM COBERTURA';
                                                 const prazoValue = getPrazoValue(row);
                                                 const diasParaInicio = getDaysDiff(prazoValue);
+                                                const prazoDisplayValue = formatDateDisplay(prazoValue);
                                                 return (
                                                     <tr key={row._id} className={`${getRowThermalClass(diasParaInicio, status, candidato, row._isInvalid)} group anim-cascade transition-all duration-300 hover:shadow-sm`} style={{ animationDelay: `${index * 15}ms` }}>
                                                         <>
@@ -2589,7 +2627,7 @@ export default function App() {
                                                             </td>
                                                             <td className="px-6 py-4"><div className={`font-bold ${row._isInvalid ? 'text-red-700' : 'text-slate-900'}`}>{row['Nome Subs'] || 'FALTANDO'}</div><div className="text-slate-600 text-xs mt-0.5">{row.CARGO} • {row['NRE / MUNICIPIO']}</div></td>
                                                             <td className="px-6 py-4"><div className={`font-bold ${candidato === 'SEM COBERTURA' ? 'text-red-700' : 'text-slate-800'}`}>{candidato}</div><div className="text-slate-500 text-xs mt-0.5">{row['Contato Candidato'] || 'Sem contato'}</div></td>
-                                                            <td className="px-6 py-4"><div className="font-bold text-slate-800">{prazoValue || 'Sem prazo'}</div>
+                                                            <td className="px-6 py-4"><div className="font-bold text-slate-800">{prazoDisplayValue || 'Sem prazo'}</div>
                                                                 {diasParaInicio !== null && !['FECHADA', 'ENCAMINHADA', 'CANCELADA'].includes(status) && candidato === 'SEM COBERTURA' && (
                                                                     <div className={`text-xs mt-1 font-bold inline-block px-2 py-0.5 rounded shadow-sm transition-transform group-hover:scale-105 ${diasParaInicio < 0 ? 'bg-red-600 text-white' : diasParaInicio === 0 ? 'bg-red-500 text-white' : diasParaInicio <= 5 ? 'bg-orange-500 text-white' : diasParaInicio <= 15 ? 'bg-yellow-400 text-yellow-900' : diasParaInicio <= 30 ? 'bg-lime-500 text-lime-900' : 'bg-green-500 text-white'}`}>
                                                                         {diasParaInicio < 0 ? `Atrasado ${Math.abs(diasParaInicio)}d` : diasParaInicio === 0 ? 'E Hoje!' : `Faltam ${diasParaInicio}d`}
@@ -3152,6 +3190,7 @@ export default function App() {
                                         <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
                                             {detailedColumns.map((column) => {
                                                 const fieldValue = String(selectedRecord?.[column] || '');
+                                                const displayValue = isPrazoColumn(column) ? formatDateDisplay(fieldValue) : fieldValue;
                                                 const isEmpty = !fieldValue.trim();
                                                 const isStatusField = normalizeCredentialText(column) === 'status';
                                                 return (
