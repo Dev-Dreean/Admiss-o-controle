@@ -273,10 +273,55 @@ const parseGoogleVisualizationRows = (payload) => {
     });
 };
 
+const fetchGoogleSheetPanelRowsViaJsonp = () => new Promise((resolve, reject) => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') {
+        reject(new Error('JSONP_UNAVAILABLE'));
+        return;
+    }
+
+    const callbackName = `__sheetJsonp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const script = document.createElement('script');
+    const cleanup = () => {
+        if (script.parentNode) script.parentNode.removeChild(script);
+        if (window[callbackName]) delete window[callbackName];
+    };
+
+    const timeoutId = window.setTimeout(() => {
+        cleanup();
+        reject(new Error('JSONP_TIMEOUT'));
+    }, 15000);
+
+    window[callbackName] = (payload) => {
+        window.clearTimeout(timeoutId);
+        cleanup();
+        try {
+            resolve(normalizeIncomingRows(parseGoogleVisualizationRows(payload)));
+        } catch (error) {
+            reject(error);
+        }
+    };
+
+    script.async = true;
+    script.onerror = () => {
+        window.clearTimeout(timeoutId);
+        cleanup();
+        reject(new Error('JSONP_LOAD_ERROR'));
+    };
+    script.src = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEETS_ID}/gviz/tq?tqx=out:json;responseHandler:${callbackName}&sheet=${encodeURIComponent(GOOGLE_SHEETS_TAB_NAME)}&t=${Date.now()}`;
+    document.body.appendChild(script);
+});
+
 const fetchGoogleSheetPanelRows = async () => {
-    const response = await fetch(`${GOOGLE_SHEETS_CSV_EXPORT}&t=${Date.now()}`);
-    if (!response.ok) throw new Error('CSV_FETCH_FAILED');
-    return normalizeIncomingRows(parseCSV(await response.text()));
+    try {
+        const response = await fetch(`${GOOGLE_SHEETS_CSV_EXPORT}&t=${Date.now()}`);
+        if (!response.ok) throw new Error('CSV_FETCH_FAILED');
+        const rows = normalizeIncomingRows(parseCSV(await response.text()));
+        if (rows.length > 0) return rows;
+    } catch (error) {
+        // fallback below
+    }
+
+    return fetchGoogleSheetPanelRowsViaJsonp();
 };
 
 function useLocalStorage(key, initialValue) {
@@ -1497,6 +1542,7 @@ export default function App() {
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
     const [deleteModalRecord, setDeleteModalRecord] = useState(null);
     const [lastSheetsSyncAt, setLastSheetsSyncAt] = useState('');
+    const [sheetLoadError, setSheetLoadError] = useState('');
 
     const [isCinematic, setIsCinematic] = useState(false);
     const [draggedSheetColumn, setDraggedSheetColumn] = useState('');
@@ -1882,10 +1928,12 @@ export default function App() {
             const parsed = await fetchGoogleSheetPanelRows();
             const { summary } = processDataImport(parsed, true, silent, 'Google Sheets');
             initialSheetsLoadFinishedRef.current = true;
+            setSheetLoadError('');
             if ((!parsed || parsed.length === 0) && !silent) setLoading(false);
 
             return summary;
         } catch (error) {
+            setSheetLoadError('Nao foi possivel carregar a aba PAINEL do Google Sheets.');
             if (!silent) {
                 setIsGSheetsModalOpen(true);
                 setLoading(false);
@@ -2757,7 +2805,10 @@ export default function App() {
                             <div className="flex flex-col items-center justify-center flex-1 text-center animate-in fade-in zoom-in-95 duration-500 my-auto">
                                 <div className="w-24 h-24 bg-indigo-50 rounded-full flex items-center justify-center mb-6"><Map className="w-12 h-12 text-indigo-400" /></div>
                                 <h2 className="text-3xl font-bold text-slate-800 mb-3">Ambiente Zerado</h2>
-                                <p className="text-slate-500 max-w-md mx-auto mb-8 leading-relaxed">Inicie sua jornada sincronizando a planilha no topo da tela.</p>
+                                <p className="text-slate-500 max-w-md mx-auto mb-4 leading-relaxed">{sheetLoadError || 'Inicie sua jornada sincronizando a planilha no topo da tela.'}</p>
+                                <button onClick={handleGoogleSheetsSync} className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-green-600 text-white text-sm font-bold hover:bg-green-700 shadow-sm hover:shadow-md transition-all active:scale-95" type="button">
+                                    <BarChart2 className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} /> Tentar sincronizar agora
+                                </button>
                             </div>
                         )}
 
